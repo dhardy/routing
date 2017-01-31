@@ -21,7 +21,7 @@ use id::PublicId;
 use itertools::Itertools;
 use rand;
 use resource_proof::ResourceProof;
-use routing_table::{Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState, Prefix,
+use routing_table::{self, Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState,
                     RemovalDetails, RoutingTable};
 use routing_table::Error as RoutingTableError;
 use rust_sodium::crypto::hash::sha256;
@@ -50,7 +50,10 @@ const CANDIDATE_ACCEPT_TIMEOUT_SECS: u64 = 60;
 /// Time (in seconds) the node waits for connection from an expected node.
 const NODE_CONNECT_TIMEOUT_SECS: u64 = 60;
 
-pub type SectionMap = BTreeMap<Prefix<XorName>, BTreeSet<PublicId>>;
+/// Outside of the routing table module we always use this parameterisation of `Prefix`.
+pub type Prefix = routing_table::Prefix<XorName>;
+/// A map from prefixes to public identifiers.
+pub type SectionMap = BTreeMap<Prefix, BTreeSet<PublicId>>;
 
 #[derive(Debug)]
 /// Errors that occur in peer status management.
@@ -381,7 +384,7 @@ impl PeerManager {
     }
 
     /// Add prefixes into routing table.
-    pub fn add_prefixes(&mut self, prefixes: Vec<Prefix<XorName>>) -> Result<(), RoutingError> {
+    pub fn add_prefixes(&mut self, prefixes: Vec<Prefix>) -> Result<(), RoutingError> {
         Ok(self.routing_table.add_prefixes(prefixes)?)
     }
 
@@ -598,9 +601,7 @@ impl PeerManager {
 
     /// Splits the indicated section and returns the `PeerId`s of any peers to which we should not
     /// remain connected.
-    pub fn split_section(&mut self,
-                         prefix: Prefix<XorName>)
-                         -> (Vec<(XorName, PeerId)>, Option<Prefix<XorName>>) {
+    pub fn split_section(&mut self, prefix: Prefix) -> (Vec<(XorName, PeerId)>, Option<Prefix>) {
         let (names_to_drop, our_new_prefix) = self.routing_table.split(prefix);
 
         let mut ids_to_drop = vec![];
@@ -636,7 +637,7 @@ impl PeerManager {
 
     /// Adds the given prefix to the routing table, splitting or merging as necessary. Returns the
     /// list of peers that have been dropped and need to be disconnected.
-    pub fn add_prefix(&mut self, prefix: Prefix<XorName>) -> Vec<(XorName, PeerId)> {
+    pub fn add_prefix(&mut self, prefix: Prefix) -> Vec<(XorName, PeerId)> {
         let names_to_drop = self.routing_table.add_prefix(prefix);
         let old_expected_peers = mem::replace(&mut self.expected_peers, HashMap::new());
         self.expected_peers = old_expected_peers.into_iter()
@@ -685,7 +686,7 @@ impl PeerManager {
     /// Wraps `RoutingTable::should_merge` with an extra check.
     ///
     /// Returns sender prefix, merge prefix, then sections.
-    pub fn should_merge(&self) -> Option<(Prefix<XorName>, Prefix<XorName>, SectionMap)> {
+    pub fn should_merge(&self) -> Option<(Prefix, Prefix, SectionMap)> {
         if !self.is_merging_possible() {
             return None;
         }
@@ -705,8 +706,8 @@ impl PeerManager {
     // taken by the node, and the list of peers to which we should now connect (only those within
     // the merging sections for now).
     pub fn merge_own_section(&mut self,
-                             sender_prefix: Prefix<XorName>,
-                             merge_prefix: Prefix<XorName>,
+                             sender_prefix: Prefix,
+                             merge_prefix: Prefix,
                              sections: SectionMap)
                              -> (OwnMergeState<XorName>, Vec<PublicId>) {
         self.remove_expired();
@@ -741,7 +742,7 @@ impl PeerManager {
     }
 
     pub fn merge_other_section(&mut self,
-                               prefix: Prefix<XorName>,
+                               prefix: Prefix,
                                section: BTreeSet<PublicId>)
                                -> HashSet<PublicId> {
         self.remove_expired();

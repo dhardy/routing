@@ -18,14 +18,13 @@
 use id::PublicId;
 use itertools::Itertools;
 use messages::SectionList;
-use routing_table::Prefix;
+use peer_manager::Prefix;
 use rust_sodium::crypto::sign::Signature;
 use std::collections::HashMap;
 use super::QUORUM;
-use super::XorName;
 
 pub type Signatures = HashMap<PublicId, Signature>;
-pub type PrefixMap<T> = HashMap<Prefix<XorName>, T>;
+pub type PrefixMap<T> = HashMap<Prefix, T>;
 
 #[derive(Default)]
 pub struct SectionListCache {
@@ -57,7 +56,7 @@ impl SectionListCache {
 
     /// Adds a new signature for a section list
     pub fn add_signature(&mut self,
-                         prefix: Prefix<XorName>,
+                         prefix: Prefix,
                          pub_id: PublicId,
                          list: SectionList,
                          sig: Signature,
@@ -80,7 +79,7 @@ impl SectionListCache {
     /// Returns the currently signed section list for `prefix` along with a quorum of signatures.
     // TODO: Remove this when the method is used in production
     #[cfg(feature="use-mock-crust")]
-    pub fn get_signatures(&self, prefix: Prefix<XorName>) -> Option<&(SectionList, Signatures)> {
+    pub fn get_signatures(&self, prefix: Prefix) -> Option<&(SectionList, Signatures)> {
         self.lists_cache.get(&prefix)
     }
 
@@ -135,7 +134,7 @@ impl SectionListCache {
         }
     }
 
-    fn remove_signatures_for_prefix_by(&mut self, prefix: Prefix<XorName>, author: PublicId) {
+    fn remove_signatures_for_prefix_by(&mut self, prefix: Prefix, author: PublicId) {
         // vector of tuples (prefix, section list) to be removed
         let to_remove = self.signed_by
             .get(&author)

@@ -28,9 +28,9 @@ use maidsafe_utilities;
 use maidsafe_utilities::serialisation::{deserialise, serialise};
 #[cfg(feature = "use-mock-crust")]
 use mock_crust::crust::PeerId;
-use peer_manager::SectionMap;
-use routing_table::{Prefix, Xorable};
+use peer_manager::{Prefix, SectionMap};
 use routing_table::Authority;
+use routing_table::Xorable;
 use rust_sodium::crypto::{box_, sign};
 use rust_sodium::crypto::hash::sha256;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -235,14 +235,14 @@ impl HopMessage {
 /// A list of a section's public IDs, together with a list of signatures of a neighbouring section.
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Hash, RustcEncodable, RustcDecodable, Debug)]
 pub struct SectionList {
-    pub prefix: Prefix<XorName>,
+    pub prefix: Prefix,
     // TODO(MAID-1677): pub signatures: BTreeSet<(PublicId, sign::Signature)>,
     pub_ids: BTreeSet<PublicId>,
 }
 
 impl SectionList {
     /// Create
-    pub fn new(prefix: Prefix<XorName>, pub_ids: BTreeSet<PublicId>) -> Self {
+    pub fn new(prefix: Prefix, pub_ids: BTreeSet<PublicId>) -> Self {
         SectionList {
             prefix: prefix,
             pub_ids: pub_ids,
@@ -250,7 +250,7 @@ impl SectionList {
     }
 
     /// Create from any object convertable to an iterator
-    pub fn from<I: IntoIterator<Item = PublicId>>(prefix: Prefix<XorName>, pub_ids: I) -> Self {
+    pub fn from<I: IntoIterator<Item = PublicId>>(prefix: Prefix, pub_ids: I) -> Self {
         Self::new(prefix, pub_ids.into_iter().collect())
     }
 }
@@ -591,7 +591,7 @@ pub enum MessageContent {
     SectionUpdate {
         /// Section prefix. Included because this message is sent to both the section's own members
         /// and neighbouring sections.
-        prefix: Prefix<XorName>,
+        prefix: Prefix,
         /// Members of the section
         members: BTreeSet<PublicId>,
     },
@@ -600,14 +600,14 @@ pub enum MessageContent {
     /// Sent from a section to a node to update it about its prefix and its member list.
     RoutingTableResponse {
         /// The section's current prefix.
-        prefix: Prefix<XorName>,
+        prefix: Prefix,
         /// Members of the section.
         members: BTreeSet<PublicId>,
         /// The message's unique identifier.
         message_id: MessageId,
     },
     /// Sent to all connected peers when our own section splits
-    SectionSplit(Prefix<XorName>, XorName),
+    SectionSplit(Prefix, XorName),
     /// Sent amongst members of a newly-merged section to allow synchronisation of their routing
     /// tables before notifying other connected peers of the merge.
     ///

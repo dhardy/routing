@@ -30,12 +30,12 @@ use log::LogLevel;
 use maidsafe_utilities::serialisation;
 use messages::{DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message, MessageContent,
                RoutingMessage, SectionList, SignedMessage, UserMessage, UserMessageCache};
-use peer_manager::{ConnectionInfoPreparedResult, PeerManager, PeerState,
+use peer_manager::{ConnectionInfoPreparedResult, PeerManager, PeerState, Prefix,
                    RESOURCE_PROOF_DURATION_SECS, SectionMap};
 use rand::{self, Rng};
 use resource_proof::ResourceProof;
 use routing_message_filter::{FilteringResult, RoutingMessageFilter};
-use routing_table::{Authority, OtherMergeDetails, OwnMergeState, Prefix, RemovalDetails, Xorable};
+use routing_table::{Authority, OtherMergeDetails, OwnMergeState, RemovalDetails, Xorable};
 use routing_table::Error as RoutingTableError;
 #[cfg(feature = "use-mock-crust")]
 use routing_table::RoutingTable;
@@ -616,7 +616,7 @@ impl Node {
         Ok(())
     }
 
-    fn get_section(&self, prefix: &Prefix<XorName>) -> Result<HashSet<XorName>, RoutingError> {
+    fn get_section(&self, prefix: &Prefix) -> Result<HashSet<XorName>, RoutingError> {
         let section = self.peer_mgr
             .routing_table()
             .get_section(&prefix.lower_bound())
@@ -627,14 +627,14 @@ impl Node {
         Ok(section)
     }
 
-    fn get_section_list(&self, prefix: &Prefix<XorName>) -> Result<SectionList, RoutingError> {
+    fn get_section_list(&self, prefix: &Prefix) -> Result<SectionList, RoutingError> {
         Ok(SectionList::new(*prefix,
                             self.peer_mgr.get_pub_ids(&self.get_section(prefix)?)))
     }
 
     /// Sends a signature for the list of members of a section with prefix `prefix` to our whole
     /// section if `dst` is `None`, or to the given node if it is `Some(name)`
-    fn send_section_list_signature(&mut self, prefix: Prefix<XorName>, dst: Option<XorName>) {
+    fn send_section_list_signature(&mut self, prefix: Prefix, dst: Option<XorName>) {
         let section = match self.get_section_list(&prefix) {
             Ok(section) => section,
             Err(err) => {
@@ -1970,7 +1970,7 @@ impl Node {
     }
 
     fn handle_section_update(&mut self,
-                             prefix: Prefix<XorName>,
+                             prefix: Prefix,
                              members: BTreeSet<PublicId>)
                              -> Evented<Result<(), RoutingError>> {
         let mut result = Evented::empty();
@@ -2045,7 +2045,7 @@ impl Node {
     }
 
     fn handle_rt_rsp(&mut self,
-                     prefix: Prefix<XorName>,
+                     prefix: Prefix,
                      members: BTreeSet<PublicId>,
                      message_id: MessageId)
                      -> Evented<Result<(), RoutingError>> {
@@ -2084,7 +2084,7 @@ impl Node {
     }
 
     fn handle_section_split(&mut self,
-                            prefix: Prefix<XorName>,
+                            prefix: Prefix,
                             joining_node: XorName)
                             -> Evented<Result<(), RoutingError>> {
         let mut events = Evented::empty();
@@ -2126,8 +2126,8 @@ impl Node {
     }
 
     fn handle_own_section_merge(&mut self,
-                                sender_prefix: Prefix<XorName>,
-                                merge_prefix: Prefix<XorName>,
+                                sender_prefix: Prefix,
+                                merge_prefix: Prefix,
                                 sections: SectionMap)
                                 -> Evented<Result<(), RoutingError>> {
         let (merge_state, needed_peers) = self.peer_mgr
@@ -2177,7 +2177,7 @@ impl Node {
     }
 
     fn handle_other_section_merge(&mut self,
-                                  merge_prefix: Prefix<XorName>,
+                                  merge_prefix: Prefix,
                                   section: BTreeSet<PublicId>)
                                   -> Evented<Result<(), RoutingError>> {
         let needed_peers = self.peer_mgr.merge_other_section(merge_prefix, section);
@@ -2708,7 +2708,7 @@ impl Node {
         result.with_value(true)
     }
 
-    fn send_section_split(&mut self, our_prefix: Prefix<XorName>, joining_node: XorName) {
+    fn send_section_split(&mut self, our_prefix: Prefix, joining_node: XorName) {
         for prefix in self.peer_mgr.routing_table().prefixes() {
             // this way of calculating the source avoids using the joining node as the route
             let src = Authority::Section(our_prefix.substituted_in(!joining_node));
@@ -2732,7 +2732,7 @@ impl Node {
     }
 
     fn send_other_section_merge(&mut self,
-                                targets: BTreeSet<Prefix<XorName>>,
+                                targets: BTreeSet<Prefix>,
                                 merge_details: OtherMergeDetails<XorName>) {
         let section = self.peer_mgr.get_pub_ids(&merge_details.section);
         for target in &targets {
@@ -2934,7 +2934,7 @@ impl Node {
     }
 
     pub fn section_list_signatures(&self,
-                                   prefix: Prefix<XorName>)
+                                   prefix: Prefix)
                                    -> Result<BTreeMap<PublicId, sign::Signature>, RoutingError> {
         if let Some(&(_, ref signatures)) = self.section_list_sigs.get_signatures(prefix) {
             Ok(signatures.iter().map(|(&pub_id, &sig)| (pub_id, sig)).collect())

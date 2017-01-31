@@ -113,6 +113,7 @@ impl<T: Clone + Copy + Default + Binary + Xorable> Prefix<T> {
 
     /// Returns the smallest name matching the prefix
     pub fn lower_bound(&self) -> T {
+        // Note: calling set_remaining is redundant since constructor new() does this.
         self.name.set_remaining(self.bit_count(), false)
     }
 
