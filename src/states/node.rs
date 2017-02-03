@@ -30,6 +30,7 @@ use log::LogLevel;
 use maidsafe_utilities::serialisation;
 use messages::{DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message, MessageContent,
                RoutingMessage, SectionList, SignedMessage, UserMessage, UserMessageCache};
+use outtray::{OutBox, OutTray};
 use peer_manager::{ConnectionInfoPreparedResult, PeerManager, PeerState, Prefix,
                    RESOURCE_PROOF_DURATION_SECS, SectionMap};
 use rand::{self, Rng};
@@ -877,7 +878,13 @@ impl Node {
                     .to_evented()
             }
             (CandidateApproval { candidate_id, client_auth, sections }, Section(_), Section(_)) => {
-                self.handle_candidate_approval(candidate_id, client_auth, sections)
+                let mut outbox = OutBox::new();
+                let result =
+                    self.handle_candidate_approval(candidate_id,
+                                                   client_auth,
+                                                   sections,
+                                                   &mut outbox);
+                Evented::new(outbox.take_events(), result)
             }
             (NodeApproval { sections }, Section(_), Client { .. }) => {
                 self.handle_node_approval(&sections)
@@ -925,13 +932,13 @@ impl Node {
     fn handle_candidate_approval(&mut self,
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
-                                 sections: SectionMap)
-                                 -> Evented<Result<(), RoutingError>> {
+                                 sections: SectionMap,
+                                 outtray: &mut OutTray)
+                                 -> Result<(), RoutingError> {
         for peer_id in self.peer_mgr.remove_expired_candidates() {
             self.disconnect_peer(&peer_id);
         }
 
-        let mut result = Evented::empty();
         // Once the joining node joined, it may receive the vote regarding itself.
         // Or a node may receive CandidateApproval before connection established.
         let opt_peer_id = match self.peer_mgr
@@ -941,7 +948,7 @@ impl Node {
                 let src = Authority::ManagedNode(*self.name());
                 if let Err(error) =
                     self.send_connection_info_request(candidate_id, src, client_auth)
-                        .extract(&mut result) {
+                        .extract_to_tray(outtray) {
                     debug!("{:?} - Failed to send connection info to {:?}: {:?}",
                            self,
                            candidate_id,
@@ -966,9 +973,9 @@ impl Node {
         }
 
         if let Some(peer_id) = opt_peer_id {
-            self.add_to_routing_table(&candidate_id, &peer_id).extract(&mut result);
+            self.add_to_routing_table(&candidate_id, &peer_id, outtray);
         }
-        result.map(Ok)
+        Ok(())
     }
 
     fn handle_node_approval(&mut self, sections: &SectionMap) -> Evented<Result<(), RoutingError>> {
@@ -1326,7 +1333,9 @@ impl Node {
         debug!("{:?} Handling NodeIdentify from {:?}.",
                self,
                public_id.name());
-        self.add_to_routing_table(&public_id, &peer_id).extract(&mut result);
+        let mut outbox = OutBox::new();
+        self.add_to_routing_table(&public_id, &peer_id, &mut outbox);
+        result.add_events(outbox.take_events());
 
         if let Some(prefix) = self.peer_mgr.routing_table().find_section_prefix(public_id.name()) {
             self.send_section_list_signature(prefix, None);
@@ -1383,7 +1392,9 @@ impl Node {
                        challenge as section has already approved it.",
                       self,
                       public_id.name());
-                self.add_to_routing_table(&public_id, &peer_id).extract(&mut result);
+                let mut outbox = OutBox::new();
+                self.add_to_routing_table(&public_id, &peer_id, &mut outbox);
+                result.add_events(outbox.take_events());
             }
             Err(error) => {
                 debug!("{:?} failed to handle CandidateIdentify from {:?}: {:?} - disconnecting",
@@ -1396,17 +1407,19 @@ impl Node {
         result
     }
 
-    fn add_to_routing_table(&mut self, public_id: &PublicId, peer_id: &PeerId) -> Evented<()> {
-        let mut result = Evented::empty();
+    fn add_to_routing_table(&mut self,
+                            public_id: &PublicId,
+                            peer_id: &PeerId,
+                            outtray: &mut OutTray) {
         match self.peer_mgr.add_to_routing_table(public_id, peer_id) {
-            Err(RoutingTableError::AlreadyExists) => return Evented::empty(),  // already in RT
+            Err(RoutingTableError::AlreadyExists) => return,  // already in RT
             Err(error) => {
                 debug!("{:?} Peer {:?} was not added to the routing table: {}",
                        self,
                        peer_id,
                        error);
                 self.disconnect_peer(peer_id);
-                return result;
+                return;
             }
             Ok(true) => {
                 // i.e. the section should split
@@ -1432,12 +1445,12 @@ impl Node {
             trace!("{:?} Node approval completed. Prefixes: {:?}",
                    self,
                    self.peer_mgr.routing_table().prefixes());
-            result.add_event(Event::Connected);
+            outtray.send_event(Event::Connected);
         }
 
         if self.is_approved {
-            result.add_event(Event::NodeAdded(*public_id.name(),
-                                              self.peer_mgr.routing_table().clone()));
+            outtray.send_event(Event::NodeAdded(*public_id.name(),
+                                                self.peer_mgr.routing_table().clone()));
         }
 
         // TODO: we probably don't need to send this if we're splitting, but in that case
@@ -1462,8 +1475,6 @@ impl Node {
                 }
             }
         }
-
-        result
     }
 
     // Tell all neighbouring sections that our member list changed.
