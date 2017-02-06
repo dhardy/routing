@@ -16,6 +16,7 @@
 // relating to use of the SAFE Network Software.
 
 use event::Event;
+use evented::Evented;
 use std::default::Default;
 use std::mem;
 
@@ -64,8 +65,17 @@ impl OutBox {
     }
 
     /// Extract the list of events (swapping in an empty list)
+    //TODO: do we need this?
+    #[allow(unused)]
     pub fn take_events(&mut self) -> Vec<Event> {
         mem::replace(&mut self.events, vec![])
+    }
+
+    /// Convert to an Evented<()>
+    ///
+    /// Note: chain .with_value to add another value
+    pub fn to_evented(self) -> Evented<()> {
+        Evented::empty_with_events(self.events)
     }
 }
 
