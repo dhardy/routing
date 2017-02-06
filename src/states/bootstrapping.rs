@@ -21,10 +21,10 @@ use crust::{PeerId, Service};
 use crust::Event as CrustEvent;
 use error::RoutingError;
 use event::Event;
-use evented::{Evented, ToEvented};
 use id::{FullId, PublicId};
 use maidsafe_utilities::serialisation;
 use messages::{DirectMessage, Message};
+use outtray::EventTray;
 use routing_table::Authority;
 use rust_sodium::crypto::hash::sha256;
 use rust_sodium::crypto::sign;
@@ -78,7 +78,7 @@ impl Bootstrapping {
         }
     }
 
-    pub fn handle_action(&mut self, action: Action) -> Evented<Transition> {
+    pub fn handle_action(&mut self, action: Action) -> Transition {
         match action {
             Action::ClientSendRequest { ref result_tx, .. } |
             Action::NodeSendMessage { ref result_tx, .. } => {
@@ -92,43 +92,51 @@ impl Bootstrapping {
             }
             Action::Timeout(token) => self.handle_timeout(token),
             Action::Terminate => {
-                return Transition::Terminate.to_evented();
+                return Transition::Terminate;
             }
         }
 
-        Transition::Stay.to_evented()
+        Transition::Stay
     }
 
-    pub fn handle_crust_event(&mut self, crust_event: CrustEvent) -> Evented<Transition> {
+    pub fn handle_crust_event(&mut self,
+                              crust_event: CrustEvent,
+                              outtray: &mut EventTray)
+                              -> Transition {
         match crust_event {
             CrustEvent::BootstrapConnect(peer_id, socket_addr) => {
-                self.handle_bootstrap_connect(peer_id, socket_addr).to_evented()
+                self.handle_bootstrap_connect(peer_id, socket_addr)
             }
-            CrustEvent::BootstrapFailed => self.handle_bootstrap_failed(),
+            CrustEvent::BootstrapFailed => self.handle_bootstrap_failed(outtray),
             CrustEvent::NewMessage(peer_id, bytes) => {
                 match self.handle_new_message(peer_id, bytes) {
-                    Ok(transition) => transition.to_evented(),
+                    Ok(transition) => transition,
                     Err(error) => {
                         debug!("{:?} - {:?}", self, error);
-                        Transition::Stay.to_evented()
+                        Transition::Stay
                     }
                 }
             }
             _ => {
                 debug!("{:?} Unhandled crust event {:?}", self, crust_event);
-                Transition::Stay.to_evented()
+                Transition::Stay
             }
         }
     }
 
-    pub fn into_client(self, proxy_peer_id: PeerId, proxy_public_id: PublicId) -> Evented<Client> {
+    pub fn into_client(self,
+                       proxy_peer_id: PeerId,
+                       proxy_public_id: PublicId,
+                       outtray: &mut EventTray)
+                       -> Client {
         Client::from_bootstrapping(self.crust_service,
                                    self.full_id,
                                    self.min_section_size,
                                    proxy_peer_id,
                                    proxy_public_id,
                                    self.stats,
-                                   self.timer)
+                                   self.timer,
+                                   outtray)
     }
 
     pub fn into_node(self, proxy_peer_id: PeerId, proxy_public_id: PublicId) -> Option<Node> {
@@ -179,9 +187,10 @@ impl Bootstrapping {
         Transition::Stay
     }
 
-    fn handle_bootstrap_failed(&mut self) -> Evented<Transition> {
+    fn handle_bootstrap_failed(&mut self, outtray: &mut EventTray) -> Transition {
         debug!("{:?} Failed to bootstrap.", self);
-        Evented::single(Event::Terminate, Transition::Terminate)
+        outtray.send_event(Event::Terminate);
+        Transition::Terminate
     }
 
     fn handle_new_message(&mut self,

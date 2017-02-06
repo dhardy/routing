@@ -23,14 +23,13 @@ use crust::{ConnectionInfoResult, CrustError, PeerId, PrivConnectionInfo, PubCon
 use crust::Event as CrustEvent;
 use error::{InterfaceError, RoutingError};
 use event::Event;
-use evented::{Evented, ToEvented};
 use id::{FullId, PublicId};
 use itertools::Itertools;
 use log::LogLevel;
 use maidsafe_utilities::serialisation;
 use messages::{DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message, MessageContent,
                RoutingMessage, SectionList, SignedMessage, UserMessage, UserMessageCache};
-use outtray::{EventTray, OutBox};
+use outtray::EventTray;
 use peer_manager::{ConnectionInfoPreparedResult, PeerManager, PeerState, Prefix,
                    RESOURCE_PROOF_DURATION_SECS, SectionMap};
 use rand::{self, Rng};
@@ -272,8 +271,7 @@ impl Node {
         }
     }
 
-    pub fn handle_action(&mut self, action: Action) -> Evented<Transition> {
-        let mut outtray = OutBox::new();
+    pub fn handle_action(&mut self, action: Action, outtray: &mut EventTray) -> Transition {
         match action {
             Action::ClientSendRequest { result_tx, .. } => {
                 let _ = result_tx.send(Err(InterfaceError::InvalidState));
@@ -290,35 +288,36 @@ impl Node {
                 let _ = result_tx.send(*self.name());
             }
             Action::Timeout(token) => {
-                if !self.handle_timeout(token, &mut outtray) {
-                    return outtray.to_evented().with_value(Transition::Terminate);
+                if !self.handle_timeout(token, outtray) {
+                    return Transition::Terminate;
                 }
             }
             Action::Terminate => {
-                return outtray.to_evented().with_value(Transition::Terminate);
+                return Transition::Terminate;
             }
         }
 
-        self.handle_routing_messages(&mut outtray);
+        self.handle_routing_messages(outtray);
         self.update_stats();
-        outtray.to_evented().with_value(Transition::Stay)
+        Transition::Stay
     }
 
-    pub fn handle_crust_event(&mut self, crust_event: CrustEvent) -> Evented<Transition> {
-        let mut outtray = OutBox::new();
+    pub fn handle_crust_event(&mut self,
+                              crust_event: CrustEvent,
+                              outtray: &mut EventTray)
+                              -> Transition {
         match crust_event {
             CrustEvent::BootstrapAccept(peer_id) => self.handle_bootstrap_accept(peer_id),
             CrustEvent::BootstrapConnect(peer_id, _) => self.handle_bootstrap_connect(peer_id),
             CrustEvent::ConnectSuccess(peer_id) => self.handle_connect_success(peer_id),
             CrustEvent::ConnectFailure(peer_id) => self.handle_connect_failure(peer_id),
             CrustEvent::LostPeer(peer_id) => {
-                if let Transition::Terminate = self.handle_lost_peer(peer_id)
-                    .extract_to_tray(&mut outtray) {
-                    return outtray.to_evented().with_value(Transition::Terminate);
+                if let Transition::Terminate = self.handle_lost_peer(peer_id, outtray) {
+                    return Transition::Terminate;
                 }
             }
             CrustEvent::NewMessage(peer_id, bytes) => {
-                match self.handle_new_message(peer_id, bytes, &mut outtray) {
+                match self.handle_new_message(peer_id, bytes, outtray) {
                     Err(RoutingError::FilterCheckFailed) |
                     Ok(_) => (),
                     Err(err) => debug!("{:?} - {:?}", self, err),
@@ -328,14 +327,14 @@ impl Node {
                 self.handle_connection_info_prepared(result_token, result)
             }
             CrustEvent::ListenerStarted(port) => {
-                if let Transition::Terminate = self.handle_listener_started(port, &mut outtray) {
-                    return outtray.to_evented().with_value(Transition::Terminate);
+                if let Transition::Terminate = self.handle_listener_started(port, outtray) {
+                    return Transition::Terminate;
                 }
             }
             CrustEvent::ListenerFailed => {
                 error!("{:?} Failed to start listening.", self);
                 outtray.send_event(Event::Terminate);
-                return outtray.to_evented().with_value(Transition::Terminate);
+                return Transition::Terminate;
             }
             CrustEvent::WriteMsgSizeProhibitive(peer_id, msg) => {
                 error!("{:?} Failed to send {}-byte message to {:?}. Message too large.",
@@ -348,9 +347,9 @@ impl Node {
             }
         }
 
-        self.handle_routing_messages(&mut outtray);
+        self.handle_routing_messages(outtray);
         self.update_stats();
-        outtray.to_evented().with_value(Transition::Stay)
+        Transition::Stay
     }
 
     fn handle_routing_messages(&mut self, outtray: &mut EventTray) {
@@ -2861,26 +2860,22 @@ impl Base for Node {
             .map(|names| names.into_iter().cloned().collect_vec())
     }
 
-    fn handle_lost_peer(&mut self, peer_id: PeerId) -> Evented<Transition> {
+    fn handle_lost_peer(&mut self, peer_id: PeerId, outtray: &mut EventTray) -> Transition {
         if peer_id == self.crust_service.id() {
             error!("{:?} LostPeer fired with our crust peer ID.", self);
-            return Transition::Stay.to_evented();
+            return Transition::Stay;
         }
 
         debug!("{:?} Received LostPeer - {:?}", self, peer_id);
 
-        let mut outtray = OutBox::new();
-
         self.dropped_tunnel_client(&peer_id);
-        self.dropped_tunnel_node(&peer_id, &mut outtray);
+        self.dropped_tunnel_node(&peer_id, outtray);
 
-        let transition = if self.dropped_peer(&peer_id, &mut outtray) {
+        if self.dropped_peer(&peer_id, outtray) {
             Transition::Stay
         } else {
             Transition::Terminate
-        };
-
-        outtray.to_evented().with_value(transition)
+        }
     }
 
     fn stats(&mut self) -> &mut Stats {

@@ -16,7 +16,6 @@
 // relating to use of the SAFE Network Software.
 
 use event::Event;
-use evented::Evented;
 use std::default::Default;
 use std::mem;
 
@@ -52,6 +51,34 @@ pub trait MessageTray {
 pub trait OutTray: EventTray + MessageTray {}
 
 
+/// A box implenting `EventTray` by collecting items to send later.
+#[derive(Default)]
+pub struct EventBox {
+    events: Vec<Event>,
+}
+
+impl EventBox {
+    /// Create an empty box
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Extract the list of events (swapping in an empty list)
+    pub fn take_events(&mut self) -> Vec<Event> {
+        mem::replace(&mut self.events, vec![])
+    }
+}
+
+impl EventTray for EventBox {
+    fn send_event(&mut self, event: Event) {
+        self.events.push(event)
+    }
+
+    fn send_events(&mut self, events: Vec<Event>) {
+        self.events.extend(events)
+    }
+}
+
 /// A box implenting `OutTray` by collecting items to send later.
 #[derive(Default)]
 pub struct OutBox {
@@ -60,6 +87,8 @@ pub struct OutBox {
 
 impl OutBox {
     /// Create an empty box
+    //TODO: we will use this
+    #[allow(unused)]
     pub fn new() -> Self {
         Default::default()
     }
@@ -69,13 +98,6 @@ impl OutBox {
     #[allow(unused)]
     pub fn take_events(&mut self) -> Vec<Event> {
         mem::replace(&mut self.events, vec![])
-    }
-
-    /// Convert to an Evented<()>
-    ///
-    /// Note: chain .with_value to add another value
-    pub fn to_evented(self) -> Evented<()> {
-        Evented::empty_with_events(self.events)
     }
 }
 
