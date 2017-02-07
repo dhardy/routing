@@ -29,7 +29,7 @@ use log::LogLevel;
 use maidsafe_utilities::serialisation;
 use messages::{DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message, MessageContent,
                RoutingMessage, SectionList, SignedMessage, UserMessage, UserMessageCache};
-use outtray::EventTray;
+use outtray::{AsEventTray, EventTray, OutTray};
 use peer_manager::{ConnectionInfoPreparedResult, PeerManager, PeerState, Prefix,
                    RESOURCE_PROOF_DURATION_SECS, SectionMap};
 use rand::{self, Rng};
@@ -304,20 +304,21 @@ impl Node {
 
     pub fn handle_crust_event(&mut self,
                               crust_event: CrustEvent,
-                              outtray: &mut EventTray)
+                              evtray: &mut EventTray)
                               -> Transition {
+        let mut outtray = OutTray::new();
         match crust_event {
             CrustEvent::BootstrapAccept(peer_id) => self.handle_bootstrap_accept(peer_id),
             CrustEvent::BootstrapConnect(peer_id, _) => self.handle_bootstrap_connect(peer_id),
             CrustEvent::ConnectSuccess(peer_id) => self.handle_connect_success(peer_id),
             CrustEvent::ConnectFailure(peer_id) => self.handle_connect_failure(peer_id),
             CrustEvent::LostPeer(peer_id) => {
-                if let Transition::Terminate = self.handle_lost_peer(peer_id, outtray) {
+                if let Transition::Terminate = self.handle_lost_peer(peer_id, &mut outtray) {
                     return Transition::Terminate;
                 }
             }
             CrustEvent::NewMessage(peer_id, bytes) => {
-                match self.handle_new_message(peer_id, bytes, outtray) {
+                match self.handle_new_message(peer_id, bytes, &mut outtray) {
                     Err(RoutingError::FilterCheckFailed) |
                     Ok(_) => (),
                     Err(err) => debug!("{:?} - {:?}", self, err),
@@ -327,7 +328,7 @@ impl Node {
                 self.handle_connection_info_prepared(result_token, result)
             }
             CrustEvent::ListenerStarted(port) => {
-                if let Transition::Terminate = self.handle_listener_started(port, outtray) {
+                if let Transition::Terminate = self.handle_listener_started(port, &mut outtray) {
                     return Transition::Terminate;
                 }
             }
@@ -347,16 +348,21 @@ impl Node {
             }
         }
 
-        self.handle_routing_messages(outtray);
+        self.handle_routing_messages(&mut outtray);
         self.update_stats();
+        evtray.send_events(outtray.take_events());
         Transition::Stay
     }
 
-    fn handle_routing_messages(&mut self, outtray: &mut EventTray) {
+    fn handle_routing_messages(&mut self, outtray: &mut OutTray) {
         while let Some(routing_msg) = self.msg_queue.pop_front() {
             if self.in_authority(&routing_msg.dst) {
                 if let Err(err) = self.dispatch_routing_message(routing_msg, outtray) {
                     debug!("{:?} Routing message dispatch failed: {:?}", self, err);
+                }
+                //TODO: for message in outtray.take_messages()
+                for peer in outtray.take_to_disconnect() {
+                    self.disconnect_peer(&peer);
                 }
             }
         }
@@ -462,7 +468,7 @@ impl Node {
     fn handle_new_message(&mut self,
                           peer_id: PeerId,
                           bytes: Vec<u8>,
-                          outtray: &mut EventTray)
+                          outtray: &mut OutTray)
                           -> Result<(), RoutingError> {
         match serialisation::deserialise(&bytes) {
             Ok(Message::Hop(hop_msg)) => self.handle_hop_message(hop_msg, peer_id),
@@ -515,7 +521,7 @@ impl Node {
     fn handle_direct_message(&mut self,
                              direct_message: DirectMessage,
                              peer_id: PeerId,
-                             outtray: &mut EventTray)
+                             outtray: &mut OutTray)
                              -> Result<(), RoutingError> {
         use messages::DirectMessage::*;
         match direct_message {
@@ -788,7 +794,7 @@ impl Node {
 
     fn dispatch_routing_message(&mut self,
                                 routing_msg: RoutingMessage,
-                                outtray: &mut EventTray)
+                                outtray: &mut OutTray)
                                 -> Result<(), RoutingError> {
         use messages::MessageContent::*;
         use Authority::{Client, ManagedNode, PrefixSection, Section};
@@ -832,7 +838,7 @@ impl Node {
                                                   message_id)
             }
             (GetNodeNameResponse { relocated_id, section, .. }, Section(_), dst) => {
-                Ok(self.handle_get_node_name_response(relocated_id, section, dst, outtray))
+                Ok(self.handle_get_node_name_response(relocated_id, section, dst, outtray.as_evt()))
             }
             (ExpectCandidate { expect_id, client_auth, message_id }, Section(_), Section(_)) => {
                 self.handle_expect_candidate(expect_id, client_auth, message_id)
@@ -871,27 +877,30 @@ impl Node {
                 self.handle_candidate_approval(candidate_id, client_auth, sections, outtray)
             }
             (NodeApproval { sections }, Section(_), Client { .. }) => {
-                self.handle_node_approval(&sections, outtray)
+                self.handle_node_approval(&sections, outtray.as_evt())
             }
             (SectionUpdate { prefix, members }, Section(_), PrefixSection(_)) => {
-                self.handle_section_update(prefix, members, outtray)
+                self.handle_section_update(prefix, members, outtray.as_evt())
             }
             (RoutingTableRequest(msg_id, digest), src @ ManagedNode(_), dst @ PrefixSection(_)) => {
                 self.handle_rt_req(msg_id, digest, src, dst)
             }
             (RoutingTableResponse { prefix, members, message_id },
              PrefixSection(_),
-             ManagedNode(_)) => self.handle_rt_rsp(prefix, members, message_id, outtray),
+             ManagedNode(_)) => self.handle_rt_rsp(prefix, members, message_id, outtray.as_evt()),
             (SectionSplit(prefix, joining_node), _, _) => {
-                self.handle_section_split(prefix, joining_node, outtray)
+                self.handle_section_split(prefix, joining_node, outtray.as_evt())
             }
             (OwnSectionMerge(sections),
              PrefixSection(sender_prefix),
              PrefixSection(merge_prefix)) => {
-                self.handle_own_section_merge(sender_prefix, merge_prefix, sections, outtray)
+                self.handle_own_section_merge(sender_prefix,
+                                              merge_prefix,
+                                              sections,
+                                              outtray.as_evt())
             }
             (OtherSectionMerge(section), PrefixSection(merge_prefix), PrefixSection(_)) => {
-                self.handle_other_section_merge(merge_prefix, section, outtray)
+                self.handle_other_section_merge(merge_prefix, section, outtray.as_evt())
             }
             (Ack(ack, _), _, _) => self.handle_ack_response(ack),
             (UserMessagePart { hash, part_count, part_index, payload, .. }, src, dst) => {
@@ -918,11 +927,9 @@ impl Node {
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
                                  sections: SectionMap,
-                                 outtray: &mut EventTray)
+                                 outtray: &mut OutTray)
                                  -> Result<(), RoutingError> {
-        for peer_id in self.peer_mgr.remove_expired_candidates() {
-            self.disconnect_peer(&peer_id);
-        }
+        outtray.disconnect_all(self.peer_mgr.remove_expired_candidates());
 
         // Once the joining node joined, it may receive the vote regarding itself.
         // Or a node may receive CandidateApproval before connection established.
@@ -964,7 +971,7 @@ impl Node {
 
     fn handle_node_approval(&mut self,
                             sections: &SectionMap,
-                            outtray: &mut EventTray)
+                            outtray: &mut OutTray)
                             -> Result<(), RoutingError> {
         if self.is_approved {
             warn!("{:?} Received duplicate NodeApproval.", self);
@@ -1317,7 +1324,7 @@ impl Node {
     fn handle_node_identify(&mut self,
                             public_id: PublicId,
                             peer_id: PeerId,
-                            outtray: &mut EventTray) {
+                            outtray: &mut OutTray) {
         debug!("{:?} Handling NodeIdentify from {:?}.",
                self,
                public_id.name());
@@ -1337,7 +1344,7 @@ impl Node {
     fn handle_candidate_identify(&mut self,
                                  public_id: PublicId,
                                  peer_id: PeerId,
-                                 outtray: &mut EventTray) {
+                                 outtray: &mut OutTray) {
         let name = public_id.name();
         debug!("{:?} Handling CandidateIdentify from {:?}.", self, name);
         let (difficulty, target_size) = if self.crust_service.is_peer_hard_coded(&peer_id) ||
@@ -1394,7 +1401,7 @@ impl Node {
     fn add_to_routing_table(&mut self,
                             public_id: &PublicId,
                             peer_id: &PeerId,
-                            outtray: &mut EventTray) {
+                            outtray: &mut OutTray) {
         match self.peer_mgr.add_to_routing_table(public_id, peer_id) {
             Err(RoutingTableError::AlreadyExists) => return,  // already in RT
             Err(error) => {
@@ -1402,7 +1409,7 @@ impl Node {
                        self,
                        peer_id,
                        error);
-                self.disconnect_peer(peer_id);
+                outtray.disconnect(peer_id);
                 return;
             }
             Ok(true) => {
@@ -1593,7 +1600,7 @@ impl Node {
                                       message_id: MessageId,
                                       src: Authority<XorName>,
                                       dst: Authority<XorName>,
-                                      outtray: &mut EventTray)
+                                      outtray: &mut OutTray)
                                       -> Result<(), RoutingError> {
         let name = match src {
             Authority::Client { .. } => public_id.name(),
@@ -1848,7 +1855,7 @@ impl Node {
                                      relocated_id: PublicId,
                                      section: BTreeSet<PublicId>,
                                      dst: Authority<XorName>,
-                                     outtray: &mut EventTray) {
+                                     outtray: &mut OutTray) {
         if !self.peer_mgr.routing_table().is_empty() {
             warn!("{:?} Received duplicate GetNodeName response.", self);
         }
@@ -1963,7 +1970,7 @@ impl Node {
     fn handle_section_update(&mut self,
                              prefix: Prefix,
                              members: BTreeSet<PublicId>,
-                             outtray: &mut EventTray)
+                             outtray: &mut OutTray)
                              -> Result<(), RoutingError> {
         trace!("{:?} Got section update for {:?}", self, prefix);
 
@@ -2039,7 +2046,7 @@ impl Node {
                      prefix: Prefix,
                      members: BTreeSet<PublicId>,
                      message_id: MessageId,
-                     outtray: &mut EventTray)
+                     outtray: &mut OutTray)
                      -> Result<(), RoutingError> {
         if Some(message_id) != self.rt_msg_id {
             return Ok(());
@@ -2119,7 +2126,7 @@ impl Node {
                                 sender_prefix: Prefix,
                                 merge_prefix: Prefix,
                                 sections: SectionMap,
-                                outtray: &mut EventTray)
+                                outtray: &mut OutTray)
                                 -> Result<(), RoutingError> {
         let (merge_state, needed_peers) = self.peer_mgr
             .merge_own_section(sender_prefix, merge_prefix, sections);
@@ -2169,7 +2176,7 @@ impl Node {
     fn handle_other_section_merge(&mut self,
                                   merge_prefix: Prefix,
                                   section: BTreeSet<PublicId>,
-                                  outtray: &mut EventTray)
+                                  outtray: &mut OutTray)
                                   -> Result<(), RoutingError> {
         let needed_peers = self.peer_mgr.merge_other_section(merge_prefix, section);
         let own_name = *self.name();
@@ -2580,7 +2587,7 @@ impl Node {
                                     their_public_id: PublicId,
                                     src: Authority<XorName>,
                                     dst: Authority<XorName>,
-                                    outtray: &mut EventTray)
+                                    outtray: &mut OutTray)
                                     -> Result<(), RoutingError> {
         let their_name = *their_public_id.name();
         if let Some(peer_id) = self.peer_mgr
