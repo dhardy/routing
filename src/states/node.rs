@@ -28,6 +28,7 @@ use id::{FullId, PublicId};
 use itertools::Itertools;
 use log::LogLevel;
 use maidsafe_utilities::serialisation;
+use member_log::MemberLog;
 use messages::{DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message, MessageContent,
                RoutingMessage, SectionList, SignedMessage, UserMessage, UserMessageCache};
 use outbox::EventBox;
@@ -137,12 +138,20 @@ impl Node {
                  -> Option<Self> {
         let name = XorName(sha256::hash(&full_id.public_id().name().0).0);
         full_id.public_id_mut().set_name(name);
+        let log = match MemberLog::new_first(full_id.public_id().clone(), min_section_size) {
+            Ok(log) => log,
+            Err(e) => {
+                //TODO: return Result instead?
+                error!("{:?} Failed to create log: {:?}", full_id.public_id(), e);
+                return None;
+            }
+        };
 
         let mut node = Self::new(cache,
                                  crust_service,
                                  true,
                                  full_id,
-                                 min_section_size,
+                                 log,
                                  Stats::new(),
                                  timer);
         if let Err(error) = node.crust_service.start_listening_tcp() {
@@ -165,13 +174,8 @@ impl Node {
                               stats: Stats,
                               timer: Timer)
                               -> Option<Self> {
-        let mut node = Self::new(cache,
-                                 crust_service,
-                                 false,
-                                 full_id,
-                                 min_section_size,
-                                 stats,
-                                 timer);
+        let log = MemberLog::new_empty(full_id.public_id().clone(), min_section_size);
+        let mut node = Self::new(cache, crust_service, false, full_id, log, stats, timer);
 
         let _ = node.peer_mgr.set_proxy(proxy_peer_id, proxy_public_id);
         if let Err(error) = node.relocate() {
@@ -188,11 +192,10 @@ impl Node {
            crust_service: Service,
            first_node: bool,
            full_id: FullId,
-           min_section_size: usize,
+           log: MemberLog,
            stats: Stats,
            mut timer: Timer)
            -> Self {
-        let public_id = *full_id.public_id();
         let tick_period = Duration::from_secs(TICK_TIMEOUT_SECS);
         let tick_timer_token = timer.schedule(tick_period);
         let user_msg_cache_duration = Duration::from_secs(USER_MSG_CACHE_EXPIRY_DURATION_SECS);
@@ -208,7 +211,7 @@ impl Node {
             is_first_node: first_node,
             is_approved: first_node,
             msg_queue: VecDeque::new(),
-            peer_mgr: PeerManager::new(first_node, min_section_size, public_id),
+            peer_mgr: PeerManager::new(log),
             response_cache: cache,
             routing_msg_filter: RoutingMessageFilter::new(),
             sig_accumulator: Default::default(),
@@ -1831,7 +1834,7 @@ impl Node {
             .schedule(Duration::from_secs(APPROVAL_PROGRESS_INTERVAL_SECS)));
 
         self.full_id.public_id_mut().set_name(*relocated_id.name());
-        self.peer_mgr.reset_routing_table(*self.full_id.public_id());
+        self.peer_mgr.relocate(*self.full_id.public_id());
         self.challenger_count = section.len();
         if let Some((_, proxy_public_id)) = self.peer_mgr.proxy() {
             if section.contains(proxy_public_id) {
