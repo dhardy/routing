@@ -26,6 +26,7 @@ use itertools::Itertools;
 use lru_time_cache::LruCache;
 use maidsafe_utilities;
 use maidsafe_utilities::serialisation::{deserialise, serialise};
+use member_log::LogId;
 #[cfg(feature = "use-mock-crust")]
 use mock_crust::crust::PeerId;
 use peer_manager::SectionMap;
@@ -587,8 +588,10 @@ pub enum MessageContent {
     GetNodeNameResponse {
         /// Supplied `PublicId`, but with the new name
         relocated_id: PublicId,
-        /// The relocated section that the joining node shall connect to
-        section: BTreeSet<PublicId>,
+        /// Log entry identifier (just after this node addition)
+        log_id: LogId,
+        /// Members of the section the node is now joining
+        members: BTreeSet<PublicId>,
         /// The message's unique identifier.
         message_id: MessageId,
     },
@@ -781,11 +784,12 @@ impl Debug for MessageContent {
                        pub_id,
                        msg_id)
             }
-            GetNodeNameResponse { ref relocated_id, ref section, ref message_id } => {
+            GetNodeNameResponse { ref relocated_id, ref log_id, ref members, ref message_id } => {
                 write!(formatter,
-                       "GetNodeNameResponse {{ {:?}, {:?}, {:?} }}",
+                       "GetNodeNameResponse {{ {:?}, {:?}, {:?}, {:?} }}",
                        relocated_id,
-                       section,
+                       log_id,
+                       members,
                        message_id)
             }
             SectionUpdate { ref prefix, ref members } => {
