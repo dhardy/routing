@@ -65,10 +65,10 @@ pub enum MemberChange {
 impl MemberChange {
     // higher value is higher priority, equal only if types are equal
     fn priority(&self) -> u32 {
-        match self {
-            &MemberChange::InitialNode(_) => 10000,
-            &MemberChange::StartPoint(_) => 9999,
-            &MemberChange::SectionSplit{..} => 5000,
+        match *self {
+            MemberChange::InitialNode(_) => 10000,
+            MemberChange::StartPoint(_) => 9999,
+            MemberChange::SectionSplit{..} => 5000,
         }
     }
 }
