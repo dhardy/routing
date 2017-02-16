@@ -168,6 +168,7 @@ mod types;
 mod utils;
 mod xor_name;
 mod sha3;
+mod route_manager;
 
 /// Mock crust
 #[cfg(feature = "use-mock-crust")]
