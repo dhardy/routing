@@ -103,16 +103,18 @@ pub struct RouteManager {
     candidates: HashMap<XorName, Candidate>,
     /// Peers we expect to connect to
     expected_peers: HashMap<XorName, Instant>,
+    table: RoutingTable<XorName>,
     // Log of routing table changes
     pub log: MemberLog,
 }
 
 impl RouteManager {
     /// Returns a new route manager.
-    pub fn new(log: MemberLog) -> RouteManager {
+    pub fn new(log: MemberLog, min_section_size: usize) -> RouteManager {
         RouteManager {
             candidates: HashMap::new(),
             expected_peers: HashMap::new(),
+            table: RoutingTable::new(*log.own_id().name(), min_section_size),
             log: log,
         }
     }
@@ -133,17 +135,20 @@ impl RouteManager {
                     our_public_id: PublicId,
                     log_start_point: LogId,
                     section_members: BTreeSet<PublicId>) {
+        let min_section_size = self.table.min_section_size();
+        self.table = RoutingTable::new(*our_public_id.name(), min_section_size);
+
         self.log.relocate(our_public_id, log_start_point, section_members)
     }
 
     /// Returns the routing table.
     pub fn routing_table(&self) -> &RoutingTable<XorName> {
-        self.log.table()
+        &self.table
     }
 
     /// Add prefixes into routing table.
     pub fn add_prefixes(&mut self, prefixes: Vec<Prefix<XorName>>) -> Result<(), RoutingError> {
-        Ok(self.log.table_mut().add_prefixes(prefixes)?)
+        Ok(self.table.add_prefixes(prefixes)?)
     }
 
     /// Adds a potential candidate to the candidate list setting its state to `VotedFor`.  If
@@ -161,7 +166,7 @@ impl RouteManager {
                    ongoing_name);
             return Err(RoutingError::AlreadyHandlingJoinRequest);
         }
-        self.log.table().should_join_our_section(&candidate_name)?;
+        self.table.should_join_our_section(&candidate_name)?;
         let _ = self.candidates.insert(candidate_name, Candidate::new(client_auth));
         Ok(())
     }
@@ -183,7 +188,7 @@ impl RouteManager {
             .or_insert_with(|| Candidate::new(client_auth))
             .state = CandidateState::AcceptedAsCandidate;
         let log_id = self.log.last_id().ok_or(MemberLogError::InvalidState)?;
-        let our_section = self.log.table().our_section();
+        let our_section = self.table.our_section();
         // TODO: we may need a new log entry here; we should get the section list from the log once
         // it's the definitive source.)
         Ok((log_id, peer_mgr.get_pub_ids(our_section, self.log.own_id()).into()))
@@ -248,7 +253,7 @@ impl RouteManager {
                    sending approval vote to our section with {:?}",
                   self,
                   name,
-                  self.log.table().our_prefix());
+                  self.table.our_prefix());
         }
         Err(RoutingError::UnknownCandidate)
     }
@@ -266,7 +271,7 @@ impl RouteManager {
                 return Ok(*peer_id);
             } else {
                 trace!("Node({:?}) No peer with name {:?}",
-                       self.log.table().our_name(),
+                       self.table.our_name(),
                        candidate_name);
             }
             return Err(RoutingError::InvalidStateForOperation);
@@ -358,7 +363,7 @@ impl RouteManager {
     pub fn remove_node(&mut self,
                        name: &XorName)
                        -> Result<RemovalDetails<XorName>, RoutingTableError> {
-        self.log.table_mut().remove(name)
+        self.table.remove(name)
     }
 
     /// Tries to add the given peer to the routing table. If successful, this returns `Ok(true)` if
@@ -366,7 +371,7 @@ impl RouteManager {
     /// cause a split.
     pub fn add_to_routing_table(&mut self, pub_id: &PublicId) -> Result<(), RoutingTableError> {
         let _ = self.expected_peers.remove(pub_id.name());
-        self.log.table_mut().add(*pub_id.name())
+        self.table.add(*pub_id.name())
     }
 
     /// Splits the indicated section and returns `(peers_to_drop, opt_prefix)`.
@@ -379,13 +384,13 @@ impl RouteManager {
                          peer_mgr: &mut PeerManager,
                          prefix: Prefix<XorName>)
                          -> (Vec<(XorName, PeerId)>, Option<Prefix<XorName>>) {
-        let (names_to_drop, our_new_prefix) = self.log.table_mut().split(prefix);
+        let (names_to_drop, our_new_prefix) = self.table.split(prefix);
         let ids_to_drop = peer_mgr.drop_via_split(names_to_drop);
 
         let removal_keys = self.candidates
             .iter()
             .find(|&(name, candidate)| {
-                !candidate.is_approved() && !self.log.table().our_prefix().matches(name)
+                !candidate.is_approved() && !self.table.our_prefix().matches(name)
             })
             .map(|(name, _)| *name);
         for name in removal_keys.iter() {
@@ -397,7 +402,7 @@ impl RouteManager {
 
         let old_expected_peers = mem::replace(&mut self.expected_peers, HashMap::new());
         self.expected_peers = old_expected_peers.into_iter()
-            .filter(|&(ref name, _)| self.log.table().need_to_add(name) == Ok(()))
+            .filter(|&(ref name, _)| self.table.need_to_add(name) == Ok(()))
             .collect();
 
         (ids_to_drop, our_new_prefix)
@@ -409,10 +414,10 @@ impl RouteManager {
                       peer_mgr: &mut PeerManager,
                       prefix: Prefix<XorName>)
                       -> Vec<(XorName, PeerId)> {
-        let names_to_drop = self.log.table_mut().add_prefix(prefix);
+        let names_to_drop = self.table.add_prefix(prefix);
         let old_expected_peers = mem::replace(&mut self.expected_peers, HashMap::new());
         self.expected_peers = old_expected_peers.into_iter()
-            .filter(|&(ref name, _)| self.log.table().need_to_add(name) == Ok(()))
+            .filter(|&(ref name, _)| self.table.need_to_add(name) == Ok(()))
             .collect();
         names_to_drop.into_iter()
             .filter_map(|name| if let Some(peer_id) = peer_mgr.remove_by_name(&name) {
@@ -430,10 +435,10 @@ impl RouteManager {
     pub fn should_merge(&self,
                         peer_mgr: &PeerManager)
                         -> Option<(Prefix<XorName>, Prefix<XorName>, SectionMap)> {
-        if !self.log.table().they_want_to_merge() && !self.expected_peers.is_empty() {
+        if !self.table.they_want_to_merge() && !self.expected_peers.is_empty() {
             return None;
         }
-        self.log.table().should_merge().map(|merge_details| {
+        self.table.should_merge().map(|merge_details| {
             let sections = merge_details.sections
                 .into_iter()
                 .map(|(prefix, members)| {
@@ -457,7 +462,7 @@ impl RouteManager {
         peer_mgr.remove_expired_peers();
         let needed = sections.iter()
             .flat_map(|(_, pub_ids)| pub_ids)
-            .filter(|pub_id| !self.log.table().has(pub_id.name()))
+            .filter(|pub_id| !self.table.has(pub_id.name()))
             .cloned()
             .collect();
 
@@ -476,13 +481,13 @@ impl RouteManager {
         expected_peers.extend(own_merge_details.sections
             .values()
             .flat_map(|section| section.iter())
-            .filter_map(|name| if self.log.table().has(name) {
+            .filter_map(|name| if self.table.has(name) {
                 None
             } else {
                 Some((*name, Instant::now()))
             }));
         self.expected_peers = expected_peers;
-        (self.log.table_mut().merge_own_section(own_merge_details), needed)
+        (self.table.merge_own_section(own_merge_details), needed)
     }
 
     pub fn merge_other_section(&mut self,
@@ -496,7 +501,7 @@ impl RouteManager {
             prefix: prefix,
             section: section.iter().map(|public_id| *public_id.name()).collect(),
         };
-        let needed_names = self.log.table_mut().merge_other_section(merge_details);
+        let needed_names = self.table.merge_other_section(merge_details);
         self.expected_peers.extend(needed_names.iter().map(|name| (*name, Instant::now())));
         section.into_iter().filter(|pub_id| needed_names.contains(pub_id.name())).collect()
     }
@@ -525,8 +530,7 @@ impl RouteManager {
 
     /// Returns the public IDs of all routing table entries, sorted by section.
     pub fn pub_ids_by_section(&self, peer_mgr: &PeerManager) -> SectionMap {
-        self.log
-            .table()
+        self.table
             .all_sections()
             .into_iter()
             .map(|(prefix, names)| (prefix, peer_mgr.get_pub_ids(&names, self.log.own_id())))
@@ -535,8 +539,7 @@ impl RouteManager {
 
     // TODO: this should get from the log itself when that is up to date
     fn get_current_members(&self, peer_mgr: &PeerManager) -> BTreeSet<PublicId> {
-        self.log
-            .table()
+        self.table
             .our_section()
             .iter()
             .filter_map(|name| if name == self.log.own_id().name() {
@@ -576,8 +579,8 @@ impl fmt::Debug for RouteManager {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter,
                "RouteManager({:?}, {:?})",
-               self.log.table().our_name(),
-               self.log.table().our_prefix())
+               self.table.our_name(),
+               self.table.our_prefix())
     }
 }
 

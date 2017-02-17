@@ -148,12 +148,13 @@ impl Node {
         let name = XorName(sha256::hash(&full_id.public_id().name().0).0);
         full_id.public_id_mut().set_name(name);
         assert!(min_section_size >= MAX_ROUTES as usize);
-        let log = MemberLog::new_first(*full_id.public_id(), min_section_size);
+        let log = MemberLog::new_first(*full_id.public_id());
 
         let mut node = Self::new(cache,
                                  crust_service,
                                  true,
                                  full_id,
+                                 min_section_size,
                                  log,
                                  Stats::new(),
                                  timer);
@@ -178,8 +179,15 @@ impl Node {
                               timer: Timer)
                               -> Option<Self> {
         assert!(min_section_size >= MAX_ROUTES as usize);
-        let log = MemberLog::new_empty(*full_id.public_id(), min_section_size);
-        let mut node = Self::new(cache, crust_service, false, full_id, log, stats, timer);
+        let log = MemberLog::new_empty(*full_id.public_id());
+        let mut node = Self::new(cache,
+                                 crust_service,
+                                 false,
+                                 full_id,
+                                 min_section_size,
+                                 log,
+                                 stats,
+                                 timer);
 
         let _ = node.peer_mgr.set_proxy(proxy_peer_id, proxy_public_id);
         if let Err(error) = node.relocate() {
@@ -196,6 +204,7 @@ impl Node {
            crust_service: Service,
            first_node: bool,
            full_id: FullId,
+           min_section_size: usize,
            log: MemberLog,
            stats: Stats,
            mut timer: Timer)
@@ -216,7 +225,7 @@ impl Node {
             is_approved: first_node,
             msg_queue: VecDeque::new(),
             peer_mgr: PeerManager::new(),
-            route_mgr: RouteManager::new(log),
+            route_mgr: RouteManager::new(log, min_section_size),
             response_cache: cache,
             routing_msg_filter: RoutingMessageFilter::new(),
             sig_accumulator: Default::default(),

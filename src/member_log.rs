@@ -19,7 +19,6 @@
 
 use id::PublicId;
 use maidsafe_utilities::serialisation::serialise;
-use routing_table::RoutingTable;
 use rust_sodium::crypto::hash::sha256;
 use std::fmt;
 use std::iter;
@@ -173,37 +172,34 @@ impl MemberEntry {
 pub struct MemberLog {
     own_id: PublicId,
     log: Vec<MemberEntry>,
-    table: RoutingTable<XorName>,
 }
 
 impl MemberLog {
     /// Create a new log as the first node (i.e. state in the log that this is the initial node in
     /// the network).
-    pub fn new_first(our_id: PublicId, min_section_size: usize) -> Self {
+    pub fn new_first(our_id: PublicId) -> Self {
         let change = MemberChange::InitialNode(*our_id.name());
         let entry = MemberEntry::new(iter::once(our_id.clone()).collect(), change);
-        let table = RoutingTable::new(*our_id.name(), min_section_size);
-        MemberLog { log: vec![entry], own_id: our_id, table: table }
+        MemberLog { log: vec![entry], own_id: our_id }
     }
 
-    /// Create a new, empty log, with a valid routing table.
+    /// Create a new, empty log.
     ///
     /// The log is invalid until an entry has been inserted.
-    pub fn new_empty(our_id: PublicId, min_section_size: usize) -> Self {
-        let table = RoutingTable::new(*our_id.name(), min_section_size);
-        MemberLog { log: vec![], own_id: our_id, table: table }
+    pub fn new_empty(our_id: PublicId) -> Self {
+        MemberLog { log: vec![], own_id: our_id }
     }
 
-    /// Node has relocated: clear the table, and change our id. Clear the log, and give it a new
-    /// "start point" where `log_id` is the starting point in our neighbour's log, and `members` is
-    /// the list of members in our section (after adding us).
+    /// Node has relocated: reset the log and change our id.
+    /// 
+    /// The log is cleared and given a new "start point" where `log_id` is the starting point in
+    /// our neighbour's log, and `members` is  the list of members in our section (after adding
+    /// us).
     pub fn relocate(&mut self, our_id: PublicId, log_id: LogId, members: BTreeSet<PublicId>) {
         if !self.log.is_empty() {
             warn!("{:?} Reset to {:?} from non-empty log.", self, our_id.name());
         }
 
-        let min_section_size = self.table().min_section_size();
-        self.table = RoutingTable::new(*our_id.name(), min_section_size);
         self.own_id = our_id;
         let change = MemberChange::StartPoint(log_id);
         let entry = MemberEntry::new(members, change);
@@ -233,17 +229,6 @@ impl MemberLog {
         &self.own_id
     }
 
-    /// Get read access to the routing table
-    pub fn table(&self) -> &RoutingTable<XorName> {
-        &self.table
-    }
-
-    /// Get write access to the routing table.
-    /// TODO: eventually all changes should be handled internally and this can go away!
-    pub fn table_mut(&mut self) -> &mut RoutingTable<XorName> {
-        &mut self.table
-    }
-
     /// Return the last identifier in the log, or none if the log is entry.
     // TODO: I don't think we'll want this eventually. At least, check usages.
     pub fn last_id(&self) -> Option<LogId> {
@@ -254,7 +239,6 @@ impl MemberLog {
 impl fmt::Debug for MemberLog {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Member log of {:?}:", self.own_id)?;
-        writeln!(f, "\tTable: {:?}", self.table)?;
         if self.log.len() <= 3 {
             write!(f, "\tLog: {:?}", self.log)
         } else {
