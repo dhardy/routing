@@ -38,7 +38,8 @@ use rand::{self, Rng};
 use resource_proof::ResourceProof;
 use route_manager::{RESOURCE_PROOF_DURATION_SECS, RouteManager, SectionMap};
 use routing_message_filter::{FilteringResult, RoutingMessageFilter};
-use routing_table::{Authority, OtherMergeDetails, OwnMergeState, Prefix, RemovalDetails, Xorable};
+use routing_table::{Authority, OtherMergeDetails, OwnMergeState, Prefix, RemovalDetails,
+                    RoutingTable, Xorable};
 use routing_table::Error as RoutingTableError;
 #[cfg(feature = "use-mock-crust")]
 use routing_table::RoutingTable;
@@ -101,6 +102,7 @@ pub struct Node {
     /// forwarding, although they may wrap a message which needs forwarding.
     msg_queue: VecDeque<RoutingMessage>,
     peer_mgr: PeerManager,
+    route_mgr: RouteManager,
     response_cache: Box<Cache>,
     routing_msg_filter: RoutingMessageFilter,
     sig_accumulator: SignatureAccumulator,
@@ -215,7 +217,8 @@ impl Node {
             is_first_node: first_node,
             is_approved: first_node,
             msg_queue: VecDeque::new(),
-            peer_mgr: PeerManager::new(log),
+            peer_mgr: PeerManager::new(),
+            route_mgr: RouteManager::new(log),
             response_cache: cache,
             routing_msg_filter: RoutingMessageFilter::new(),
             sig_accumulator: Default::default(),
@@ -267,8 +270,8 @@ impl Node {
             }
         }
 
-        if self.stats.cur_routing_table_size != self.peer_mgr.routing_table().len() {
-            self.stats.cur_routing_table_size = self.peer_mgr.routing_table().len();
+        if self.stats.cur_routing_table_size != self.routing_table().len() {
+            self.stats.cur_routing_table_size = self.routing_table().len();
             if self.is_approved {
                 self.print_rt_size();
             }
@@ -282,7 +285,7 @@ impl Node {
                                      self,
                                      self.crust_service.id(),
                                      self.stats.cur_routing_table_size);
-            let network_estimate = match self.peer_mgr.routing_table().network_size_estimate() {
+            let network_estimate = match self.routing_table().network_size_estimate() {
                 (n, true) => format!("Exact network size: {}", n),
                 (n, false) => format!("Estimated network size: {}", n),
             };
@@ -293,6 +296,16 @@ impl Node {
             log!(target: "routing_stats", TABLE_LVL, "| {:<1$} |", network_estimate, sep_len);
             log!(target: "routing_stats", TABLE_LVL, " -{}- ", sep_str);
         }
+    }
+
+    /// Routing table of this node.
+    pub fn routing_table(&self) -> &RoutingTable<XorName> {
+        self.route_mgr.routing_table()
+    }
+
+    /// Public ID of this node.
+    fn own_id(&self) -> &PublicId {
+        self.route_mgr.log.own_id()
     }
 
     pub fn handle_action(&mut self, action: Action, outbox: &mut EventBox) -> Transition {
@@ -455,7 +468,8 @@ impl Node {
     }
 
     fn find_tunnel_for_peer(&mut self, peer_id: PeerId, pub_id: &PublicId) {
-        for (name, dst_peer_id) in self.peer_mgr.set_searching_for_tunnel(peer_id, *pub_id) {
+        for (name, dst_peer_id) in
+            self.peer_mgr.set_searching_for_tunnel(peer_id, *pub_id, self.routing_table()) {
             trace!("{:?} Asking {:?} to serve as a tunnel for {:?}.",
                    self,
                    name,
@@ -610,8 +624,7 @@ impl Node {
     }
 
     fn get_section(&self, prefix: &Prefix<XorName>) -> Result<BTreeSet<XorName>, RoutingError> {
-        let section = self.peer_mgr
-            .routing_table()
+        let section = self.routing_table()
             .get_section(&prefix.lower_bound())
             .ok_or(RoutingError::InvalidSource)?
             .iter()
@@ -621,8 +634,8 @@ impl Node {
     }
 
     fn get_section_list(&self, prefix: &Prefix<XorName>) -> Result<SectionList, RoutingError> {
-        Ok(SectionList::new(*prefix,
-                            self.peer_mgr.get_pub_ids(&self.get_section(prefix)?)))
+        let pub_ids = self.peer_mgr.get_pub_ids(&self.get_section(prefix)?, self.own_id());
+        Ok(SectionList::new(*prefix, pub_ids))
     }
 
     /// Sends a signature for the list of members of a section with prefix `prefix` to our whole
@@ -654,15 +667,14 @@ impl Node {
                                              *self.full_id.public_id(),
                                              section.clone(),
                                              sig,
-                                             self.peer_mgr.routing_table().our_section().len());
+                                             self.routing_table().our_section().len());
 
         // this defines whom we are sending signature to: our section if dst is None, or given
         // name if it's Some
         let peers = if let Some(dst) = dst {
             self.peer_mgr.get_peer_id(&dst).into_iter().cloned().collect_vec()
         } else {
-            self.peer_mgr
-                .routing_table()
+            self.routing_table()
                 .our_section()
                 .into_iter()
                 .filter(|&x| *x != *self.name())    // we don't want to send to ourselves
@@ -691,7 +703,7 @@ impl Node {
                                *src_pub_id,
                                section_list,
                                sig,
-                               self.peer_mgr.routing_table().our_section().len());
+                               self.routing_table().our_section().len());
             Ok(())
         } else {
             Err(RoutingError::FailedSignature)
@@ -911,14 +923,14 @@ impl Node {
                                  client_auth: Authority<XorName>,
                                  outbox: &mut EventBox)
                                  -> Result<(), RoutingError> {
-        for peer_id in self.peer_mgr.remove_expired_candidates() {
+        for peer_id in self.route_mgr.remove_expired_candidates() {
             self.disconnect_peer(&peer_id);
         }
 
         // Once the joining node joined, it may receive the vote regarding itself.
         // Or a node may receive CandidateApproval before connection established.
-        let opt_peer_id = match self.peer_mgr
-            .handle_candidate_approval(*candidate_id.name(), client_auth) {
+        let opt_peer_id = match self.route_mgr
+            .handle_candidate_approval(&self.peer_mgr, *candidate_id.name(), client_auth) {
             Ok(peer_id) => Some(peer_id),
             Err(_) => {
                 let src = Authority::ManagedNode(*self.name());
@@ -973,7 +985,7 @@ impl Node {
 
         self.get_approval_timer_token = None;
         self.approval_progress_timer_token = None;
-        if let Err(error) = self.peer_mgr.add_prefixes(sections.keys().cloned().collect()) {
+        if let Err(error) = self.route_mgr.add_prefixes(sections.keys().cloned().collect()) {
             info!("{:?} Received invalid prefixes in NodeApproval: {:?}. Restarting.",
                   self,
                   error);
@@ -983,9 +995,9 @@ impl Node {
 
         self.is_approved = true;
         outbox.send_event(Event::Connected);
-        for name in self.peer_mgr.routing_table().iter() {
+        for name in self.routing_table().iter() {
             // TODO: try to remove this as safe_core/safe_vault may not require this notification
-            outbox.send_event(Event::NodeAdded(*name, self.peer_mgr.routing_table().clone()));
+            outbox.send_event(Event::NodeAdded(*name, self.routing_table().clone()));
         }
 
         let our_prefix = *self.our_prefix();
@@ -993,8 +1005,8 @@ impl Node {
 
         for section in sections.values() {
             for pub_id in section.iter() {
-                if !self.peer_mgr.routing_table().has(pub_id.name()) {
-                    self.peer_mgr.expect_peer(pub_id);
+                if !self.routing_table().has(pub_id.name()) {
+                    self.route_mgr.expect_peer(pub_id);
                     debug!("{:?} Sending connection info to {:?} on NodeApproval.",
                            self,
                            pub_id);
@@ -1016,7 +1028,7 @@ impl Node {
               self);
         trace!("{:?} Node approval completed. Prefixes: {:?}",
                self,
-               self.peer_mgr.routing_table().prefixes());
+               self.routing_table().prefixes());
         self.print_rt_size();
         self.stats.enable_logging();
 
@@ -1118,7 +1130,7 @@ impl Node {
             return;
         };
 
-        match self.peer_mgr
+        match self.route_mgr
             .verify_candidate(&name, part_index, part_count, proof, leading_zero_bytes) {
             Err(error) => {
                 debug!("{:?} Failed to verify candidate {}: {:?}",
@@ -1279,11 +1291,11 @@ impl Node {
         }
 
         if (client_restriction || !self.is_first_node) &&
-           self.peer_mgr.routing_table().len() < self.min_section_size() - 1 {
+           self.routing_table().len() < self.min_section_size() - 1 {
             debug!("{:?} Client {:?} rejected: Routing table has {} entries. {} required.",
                    self,
                    public_id.name(),
-                   self.peer_mgr.routing_table().len(),
+                   self.routing_table().len(),
                    self.min_section_size() - 1);
             self.send_direct_message(peer_id, DirectMessage::BootstrapDeny);
             return;
@@ -1327,18 +1339,19 @@ impl Node {
             (0, 1)
         } else {
             (RESOURCE_PROOF_DIFFICULTY,
-             RESOURCE_PROOF_TARGET_SIZE / (self.peer_mgr.routing_table().our_section().len() + 1))
+             RESOURCE_PROOF_TARGET_SIZE / (self.routing_table().our_section().len() + 1))
         };
         let seed: Vec<u8> = if cfg!(feature = "use-mock-crust") {
             vec![5u8; 4]
         } else {
             rand::thread_rng().gen_iter().take(10).collect()
         };
-        match self.peer_mgr.handle_candidate_identify(&public_id,
-                                                      &peer_id,
-                                                      target_size,
-                                                      difficulty,
-                                                      seed.clone()) {
+        match self.route_mgr.handle_candidate_identify(&self.peer_mgr,
+                                                       &public_id,
+                                                       &peer_id,
+                                                       target_size,
+                                                       difficulty,
+                                                       seed.clone()) {
             Ok(true) => {
                 let direct_message = DirectMessage::ResourceProof {
                     seed: seed,
@@ -1374,8 +1387,8 @@ impl Node {
                             public_id: &PublicId,
                             peer_id: &PeerId,
                             outbox: &mut EventBox) {
-        self.peer_mgr.set_to_full_node(pub_id, peer_id);
-        match self.peer_mgr.add_to_routing_table(public_id, peer_id) {
+        self.peer_mgr.set_to_full_node(public_id, peer_id);
+        match self.route_mgr.add_to_routing_table(public_id, peer_id) {
             Ok(()) => {}
             Err(RoutingTableError::AlreadyExists) => return,  // already in RT
             Err(error) => {
@@ -1388,9 +1401,8 @@ impl Node {
             }
         }
 
-        if self.our_prefix().matches(public_id.name()) &&
-           self.peer_mgr.routing_table().we_should_split() {
-            match self.peer_mgr.make_split_entry() {
+        if self.our_prefix().matches(public_id.name()) && self.routing_table().we_should_split() {
+            match self.route_mgr.make_split_entry() {
                 Ok(entry) => self.send_log_entry_to_section(entry),
                 Err(e) => error!("Failed to make split entry: {:?}", e),
             }
@@ -1399,21 +1411,20 @@ impl Node {
             self.merge_if_necessary();
         }
 
-        if self.peer_mgr.routing_table().our_section().contains(public_id.name()) {
+        if self.routing_table().our_section().contains(public_id.name()) {
             self.reset_rt_timer();
         }
 
         debug!("{:?} Added {:?} to routing table.", self, public_id.name());
-        if self.is_first_node && self.peer_mgr.routing_table().len() == 1 {
+        if self.is_first_node && self.routing_table().len() == 1 {
             trace!("{:?} Node approval completed. Prefixes: {:?}",
                    self,
-                   self.peer_mgr.routing_table().prefixes());
+                   self.routing_table().prefixes());
             outbox.send_event(Event::Connected);
         }
 
         if self.is_approved {
-            outbox.send_event(Event::NodeAdded(*public_id.name(),
-                                               self.peer_mgr.routing_table().clone()));
+            outbox.send_event(Event::NodeAdded(*public_id.name(), self.routing_table().clone()));
 
             // TODO: we probably don't need to send this if we're splitting, but in that case
             // we should send something else instead. This will do for now.
@@ -1425,7 +1436,7 @@ impl Node {
                 self.send_section_list_signature(prefix, None);
                 if prefix == *self.our_prefix() {
                     // if the node joined our section, send signatures for all section lists to it
-                    for pfx in self.peer_mgr.routing_table().prefixes() {
+                    for pfx in self.routing_table().prefixes() {
                         self.send_section_list_signature(pfx, Some(*public_id.name()));
                     }
                 }
@@ -1445,20 +1456,20 @@ impl Node {
     // Tell all neighbouring sections that our member list changed.
     // Currently we only send this when nodes join and it's only used to add missing members.
     fn send_section_update(&mut self) {
-        if !self.peer_mgr.routing_table().is_valid() {
+        if !self.routing_table().is_valid() {
             trace!("{:?} Not sending section update since RT invariant not held.",
                    self);
             return;
         }
         trace!("{:?} Sending section update", self);
-        let members = self.peer_mgr.get_pub_ids(self.peer_mgr.routing_table().our_section());
+        let members = self.peer_mgr.get_pub_ids(self.routing_table().our_section(), self.own_id());
 
         let content = MessageContent::SectionUpdate {
             prefix: *self.our_prefix(),
             members: members,
         };
 
-        let neighbours = self.peer_mgr.routing_table().other_prefixes();
+        let neighbours = self.routing_table().other_prefixes();
         for neighbour_pfx in neighbours {
             let src = Authority::Section(self.our_prefix().lower_bound());
             let dst = Authority::PrefixSection(neighbour_pfx);
@@ -1579,7 +1590,7 @@ impl Node {
             Authority::ManagedNode(ref name) => name,
             _ => unreachable!(),
         };
-        self.peer_mgr.allow_connect(name)?;
+        self.routing_table().need_to_add(name)?;
         let their_connection_info = self.decrypt_connection_info(&conn_info.encrypted_info,
                                      &box_::Nonce(conn_info.nonce),
                                      &conn_info.pub_id)?;
@@ -1625,7 +1636,7 @@ impl Node {
                                        src: XorName,
                                        dst: Authority<XorName>)
                                        -> Result<(), RoutingError> {
-        self.peer_mgr.allow_connect(&src)?;
+        self.routing_table().need_to_add(&src)?;
         let their_connection_info = self.decrypt_connection_info(&conn_info.encrypted_info,
                                      &box_::Nonce(conn_info.nonce),
                                      &conn_info.pub_id)?;
@@ -1777,7 +1788,7 @@ impl Node {
             return Err(RoutingError::InvalidDestination);
         }
 
-        let close_section = match self.peer_mgr.routing_table().close_names(&dst_name) {
+        let close_section = match self.routing_table().close_names(&dst_name) {
             Some(close_section) => close_section.into_iter().collect(),
             None => return Err(RoutingError::InvalidDestination),
         };
@@ -1823,7 +1834,7 @@ impl Node {
 
         self.full_id.public_id_mut().set_name(*relocated_id.name());
         // TODO: can we move this to end of function instead of cloning members?
-        self.peer_mgr.relocate(*self.full_id.public_id(), log_id, members.clone());
+        self.route_mgr.relocate(*self.full_id.public_id(), log_id, members.clone());
         self.challenger_count = members.len();
         if let Some((_, proxy_public_id)) = self.peer_mgr.proxy() {
             if members.contains(proxy_public_id) {
@@ -1834,7 +1845,7 @@ impl Node {
         }
         trace!("{:?} GetNodeName completed. Prefixes: {:?}",
                self,
-               self.peer_mgr.routing_table().prefixes());
+               self.routing_table().prefixes());
         info!("{:?} Received relocated name. Establishing connections to {} peers.",
               self,
               members.len());
@@ -1861,7 +1872,7 @@ impl Node {
                                client_auth: Authority<XorName>,
                                message_id: MessageId)
                                -> Result<(), RoutingError> {
-        for peer_id in self.peer_mgr.remove_expired_candidates() {
+        for peer_id in self.route_mgr.remove_expired_candidates() {
             self.disconnect_peer(&peer_id);
         }
 
@@ -1886,7 +1897,7 @@ impl Node {
             return self.send_routing_message(src, dst, request_content);
         }
 
-        self.peer_mgr.expect_candidate(*candidate_id.name(), client_auth)?;
+        self.route_mgr.expect_candidate(*candidate_id.name(), client_auth)?;
         let response_content = MessageContent::AcceptAsCandidate {
             expect_id: candidate_id,
             client_auth: client_auth,
@@ -1908,7 +1919,7 @@ impl Node {
                                   client_auth: Authority<XorName>,
                                   message_id: MessageId)
                                   -> Result<(), RoutingError> {
-        for peer_id in self.peer_mgr.remove_expired_candidates() {
+        for peer_id in self.route_mgr.remove_expired_candidates() {
             self.disconnect_peer(&peer_id);
         }
 
@@ -1920,8 +1931,8 @@ impl Node {
         self.candidate_timer_token = Some(self.timer
             .schedule(Duration::from_secs(RESOURCE_PROOF_DURATION_SECS)));
 
-        let (log_id, members) = self.peer_mgr
-            .accept_as_candidate(*candidate_id.name(), client_auth)?;
+        let (log_id, members) = self.route_mgr
+            .accept_as_candidate(&self.peer_mgr, *candidate_id.name(), client_auth)?;
         let response_content = MessageContent::GetNodeNameResponse {
             relocated_id: candidate_id,
             log_id: log_id,
@@ -1953,7 +1964,7 @@ impl Node {
         //       flow for joining nodes is in place and we send the routing table to the new node
         //       at the point where it gets added to the section.
         let pfx_name = prefix.lower_bound();
-        while let Some(rt_pfx) = self.peer_mgr.routing_table().find_section_prefix(&pfx_name) {
+        while let Some(rt_pfx) = self.routing_table().find_section_prefix(&pfx_name) {
             if rt_pfx.bit_count() >= prefix.bit_count() {
                 break;
             }
@@ -1961,23 +1972,22 @@ impl Node {
             self.handle_section_split(rt_pfx, outbox);
         }
         // Filter list of members to just those we don't know about:
-        let members =
-            if let Some(section) = self.peer_mgr.routing_table().section_with_prefix(&prefix) {
-                let f = |id: &PublicId| !section.contains(id.name());
-                members.into_iter().filter(f).collect_vec()
-            } else {
-                debug!("{:?} Section update received from unknown neighbour {:?}",
-                       self,
-                       prefix);
-                return Ok(());
-            };
+        let members = if let Some(section) = self.routing_table().section_with_prefix(&prefix) {
+            let f = |id: &PublicId| !section.contains(id.name());
+            members.into_iter().filter(f).collect_vec()
+        } else {
+            debug!("{:?} Section update received from unknown neighbour {:?}",
+                   self,
+                   prefix);
+            return Ok(());
+        };
         let members = members.into_iter()
-            .filter(|id: &PublicId| !self.peer_mgr.is_expected(id.name()))
+            .filter(|id: &PublicId| !self.route_mgr.is_expected(id.name()))
             .collect_vec();
 
         let own_name = *self.name();
         for pub_id in members {
-            self.peer_mgr.expect_peer(&pub_id);
+            self.route_mgr.is_expected(pub_id.name());
             if let Err(error) = self.send_connection_info_request(pub_id,
                                               Authority::ManagedNode(own_name),
                                               Authority::ManagedNode(*pub_id.name()),
@@ -1997,7 +2007,7 @@ impl Node {
                      src: Authority<XorName>,
                      dst: Authority<XorName>)
                      -> Result<(), RoutingError> {
-        let sections = self.peer_mgr.pub_ids_by_section();
+        let sections = self.route_mgr.pub_ids_by_section();
         let prefixes = self.peer_mgr.routing_table().prefixes();
         let serialised_rt = serialisation::serialise(&(&sections, prefixes))?;
         if digest == sha256::hash(&serialised_rt) {
@@ -2031,7 +2041,7 @@ impl Node {
             return Ok(());
         }
         let old_prefix = *self.our_prefix();
-        for (name, peer_id) in self.peer_mgr.add_prefix(prefix) {
+        for (name, peer_id) in self.route_mgr.add_prefix(prefix) {
             self.disconnect_peer(&peer_id);
             info!("{:?} Dropped {:?} from the routing table.", self, name);
         }
@@ -2049,10 +2059,10 @@ impl Node {
         }
         info!("{:?} Update on RoutingTableResponse completed. Prefixes: {:?}",
               self,
-              self.peer_mgr.routing_table().prefixes());
+              self.routing_table().prefixes());
         let src = Authority::ManagedNode(*self.name());
         for member in members {
-            if self.peer_mgr.routing_table().need_to_add(member.name()).is_ok() {
+            if self.routing_table().need_to_add(member.name()).is_ok() {
                 let dst = Authority::ManagedNode(*member.name());
                 if let Err(error) = self.send_connection_info_request(member, src, dst, outbox) {
                     debug!("{:?} - Failed to send connection info to {:?}: {:?}",
@@ -2071,7 +2081,7 @@ impl Node {
         let split_us = prefix == *self.our_prefix();
         // None of the `peers_to_drop` will have been in our section, so no need to notify Routing
         // user about them.
-        let (peers_to_drop, our_new_prefix) = self.peer_mgr.split_section(prefix);
+        let (peers_to_drop, our_new_prefix) = self.route_mgr.split_section(&self.peer_mgr, prefix);
         if let Some(new_prefix) = our_new_prefix {
             outbox.send_event(Event::SectionSplit(new_prefix));
         }
@@ -2082,7 +2092,7 @@ impl Node {
         info!("{:?} Section split for {:?} completed. Prefixes: {:?}",
               self,
               prefix,
-              self.peer_mgr.routing_table().prefixes());
+              self.routing_table().prefixes());
 
         self.merge_if_necessary();
 
@@ -2090,7 +2100,7 @@ impl Node {
             // Tell other sections about the split.
             let src = Authority::Section(prefix.lower_bound());
             let content = MessageContent::SectionSplit(prefix);
-            for other_pfx in self.peer_mgr.routing_table().prefixes() {
+            for other_pfx in self.routing_table().prefixes() {
                 let dst = Authority::PrefixSection(other_pfx);
                 if let Err(err) = self.send_routing_message(src, dst, content.clone()) {
                     debug!("{:?} Failed to send SectionSplit: {:?}.", self, err);
@@ -2103,7 +2113,7 @@ impl Node {
         // Clippy 0.0.104 is wrong since it is not possible to _move_ values out of an array.
         #[cfg_attr(feature="cargo-clippy", allow(useless_vec))]
         for new_prefix in vec![prefix.pushed(false), prefix.pushed(true)] {
-            if self.peer_mgr.routing_table().has_prefix(&new_prefix) {
+            if self.routing_table().has_prefix(&new_prefix) {
                 self.send_section_list_signature(new_prefix, None);
             }
         }
@@ -2117,7 +2127,7 @@ impl Node {
                                 sections: SectionMap,
                                 outbox: &mut EventBox)
                                 -> Result<(), RoutingError> {
-        let (merge_state, needed_peers) = self.peer_mgr
+        let (merge_state, needed_peers) = self.route_mgr
             .merge_own_section(sender_prefix, merge_prefix, sections);
 
         match merge_state {
@@ -2128,11 +2138,11 @@ impl Node {
                 outbox.send_event(Event::SectionMerge(merge_details.prefix));
                 info!("{:?} Own section merge completed. Prefixes: {:?}",
                       self,
-                      self.peer_mgr.routing_table().prefixes());
+                      self.routing_table().prefixes());
                 self.merge_if_necessary();
 
                 // after the merge, half of our section won't have our signatures -- send them
-                for prefix in self.peer_mgr.routing_table().prefixes() {
+                for prefix in self.routing_table().prefixes() {
                     self.send_section_list_signature(prefix, None);
                 }
                 self.send_other_section_merge(targets, merge_details);
@@ -2164,7 +2174,7 @@ impl Node {
                                   section: BTreeSet<PublicId>,
                                   outbox: &mut EventBox)
                                   -> Result<(), RoutingError> {
-        let needed_peers = self.peer_mgr.merge_other_section(merge_prefix, section);
+        let needed_peers = self.route_mgr.merge_other_section(merge_prefix, section);
         let own_name = *self.name();
 
         for needed in needed_peers {
@@ -2181,7 +2191,7 @@ impl Node {
         }
         info!("{:?} Other section merge completed. Prefixes: {:?}",
               self,
-              self.peer_mgr.routing_table().prefixes());
+              self.routing_table().prefixes());
         self.merge_if_necessary();
         self.send_section_list_signature(merge_prefix, None);
         self.reset_rt_timer();
@@ -2223,7 +2233,7 @@ impl Node {
         } else if self.candidate_status_token == Some(token) {
             self.candidate_status_token = Some(self.timer
                 .schedule(Duration::from_secs(CANDIDATE_STATUS_INTERVAL_SECS)));
-            self.peer_mgr.show_candidate_status();
+            self.route_mgr.show_candidate_status();
         } else if self.approval_progress_timer_token == Some(token) {
             self.approval_progress_timer_token = Some(self.timer
                 .schedule(Duration::from_secs(APPROVAL_PROGRESS_INTERVAL_SECS)));
@@ -2286,7 +2296,7 @@ impl Node {
         if self.is_approved {
             let msg_id = MessageId::new();
             self.rt_msg_id = Some(msg_id);
-            let sections = self.peer_mgr.pub_ids_by_section();
+            let sections = self.route_mgr.pub_ids_by_section();
             let prefixes = self.peer_mgr.routing_table().prefixes();
             let digest = sha256::hash(&serialisation::serialise(&(sections, prefixes))?);
             trace!("{:?} Sending RT request {:?} with digest {:?}",
@@ -2305,7 +2315,8 @@ impl Node {
     }
 
     fn send_candidate_approval(&mut self) -> Result<(), RoutingError> {
-        let (candidate_id, client_auth, sections) = match self.peer_mgr.verified_candidate_info() {
+        let (candidate_id, client_auth, sections) = match self.route_mgr
+            .verified_candidate_info(&self.peer_mgr) {
             Err(_) => {
                 trace!("{:?} No candidate for which to send CandidateApproval.",
                        self);
@@ -2379,7 +2390,7 @@ impl Node {
     fn handle_log_entry(&mut self, entry: MemberEntry, outbox: &mut EventBox) {
         self.reset_log_entry_timer();
         // We first match in PeerManager then match here too:
-        let need_split = if let Some(entry) = self.peer_mgr.handle_log_entry(entry) {
+        let need_split = if let Some(entry) = self.route_mgr.handle_log_entry(entry) {
             match entry.change {
                 MemberChange::InitialNode(_) |
                 MemberChange::StartPoint(_) => false,
@@ -2401,7 +2412,7 @@ impl Node {
             // should never be accumulated:
             MemberChange::InitialNode(_) |
             MemberChange::StartPoint(_) => false,
-            MemberChange::SectionSplit { .. } => self.peer_mgr.routing_table().we_should_split(),
+            MemberChange::SectionSplit { .. } => self.routing_table().we_should_split(),
         }
     }
 
@@ -2543,8 +2554,7 @@ impl Node {
         use Authority::*;
         let list: Vec<&XorName> = match *src {
             ClientManager(_) | NaeManager(_) | NodeManager(_) => {
-                let mut v = self.peer_mgr
-                    .routing_table()
+                let mut v = self.routing_table()
                     .our_section()
                     .iter()
                     .sorted_by(|&lhs, &rhs| src.name().cmp_distance(lhs, rhs));
@@ -2552,15 +2562,13 @@ impl Node {
                 v
             }
             Section(_) => {
-                self.peer_mgr
-                    .routing_table()
+                self.routing_table()
                     .our_section()
                     .iter()
                     .sorted_by(|&lhs, &rhs| src.name().cmp_distance(lhs, rhs))
             }
             PrefixSection(ref pfx) => {
-                self.peer_mgr
-                    .routing_table()
+                self.routing_table()
                     .iter()
                     .filter(|name| pfx.matches(name))
                     .chain(iter::once(self.name()))
@@ -2593,8 +2601,7 @@ impl Node {
         };
 
         if self.is_proper() && !force_via_proxy {
-            let targets: HashSet<_> = self.peer_mgr
-                .routing_table()
+            let targets: HashSet<_> = self.routing_table()
                 .targets(&routing_msg.dst, *exclude, route as usize)?
                 .into_iter()
                 .filter(|target| !sent_to.contains(target))
@@ -2687,7 +2694,7 @@ impl Node {
             return Ok(());
         }
 
-        self.peer_mgr.allow_connect(&their_name)?;
+        self.routing_table().need_to_add(&their_name)?;
 
         if let Some(token) = self.peer_mgr.get_connection_token(src, dst, their_public_id) {
             self.crust_service.prepare_connection_info(token);
@@ -2743,7 +2750,7 @@ impl Node {
                        peer.name(),
                        peer_id);
 
-                if self.peer_mgr.routing_table().len() < self.min_section_size() - 1 {
+                if self.routing_table().len() < self.min_section_size() - 1 {
                     outbox.send_event(Event::Terminate);
                     return false;
                 }
@@ -2765,20 +2772,20 @@ impl Node {
               self,
               details.name);
 
-        outbox.send_event(Event::NodeLost(details.name, self.peer_mgr.routing_table().clone()));
+        outbox.send_event(Event::NodeLost(details.name, self.routing_table().clone()));
 
         self.merge_if_necessary();
 
-        self.peer_mgr.routing_table().find_section_prefix(&details.name).map_or((), |prefix| {
+        self.routing_table().find_section_prefix(&details.name).map_or((), |prefix| {
             self.send_section_list_signature(prefix, None);
         });
         if details.was_in_our_section {
             self.reset_rt_timer();
             self.section_list_sigs
-                .remove_signatures_by(*pub_id, self.peer_mgr.routing_table().our_section().len());
+                .remove_signatures_by(*pub_id, self.routing_table().our_section().len());
         }
 
-        if self.peer_mgr.routing_table().is_empty() {
+        if self.routing_table().is_empty() {
             debug!("{:?} Lost all routing connections.", self);
             if !self.is_first_node {
                 outbox.send_event(Event::RestartRequired);
@@ -2790,7 +2797,7 @@ impl Node {
     }
 
     fn merge_if_necessary(&mut self) {
-        if let Some((sender_prefix, merge_prefix, sections)) = self.peer_mgr.should_merge() {
+        if let Some((sender_prefix, merge_prefix, sections)) = self.route_mgr.should_merge() {
             let content = MessageContent::OwnSectionMerge(sections);
             let src = Authority::PrefixSection(sender_prefix);
             let dst = Authority::PrefixSection(merge_prefix);
@@ -2803,7 +2810,7 @@ impl Node {
     fn send_other_section_merge(&mut self,
                                 targets: BTreeSet<Prefix<XorName>>,
                                 merge_details: OtherMergeDetails<XorName>) {
-        let section = self.peer_mgr.get_pub_ids(&merge_details.section);
+        let section = self.peer_mgr.get_pub_ids(&merge_details.section, self.own_id());
         let content = MessageContent::OtherSectionMerge(section);
         let src = Authority::PrefixSection(merge_details.prefix);
         for target in &targets {
@@ -2842,7 +2849,7 @@ impl Node {
     // Proper node is either the first node in the network or a node which has at least one entry
     // in its routing table.
     fn is_proper(&self) -> bool {
-        self.is_first_node || self.peer_mgr.routing_table().len() >= 1
+        self.is_first_node || self.routing_table().len() >= 1
     }
 
     fn send_direct_message(&mut self, dst_id: PeerId, direct_message: DirectMessage) {
@@ -2861,7 +2868,7 @@ impl Node {
     }
 
     fn our_prefix(&self) -> &Prefix<XorName> {
-        self.peer_mgr.routing_table().our_prefix()
+        self.routing_table().our_prefix()
     }
 
     // For the ongoing collection of `ResourceProofResponse` messages, returns a tuple comprising:
@@ -2921,7 +2928,7 @@ impl Node {
     }
 
     fn min_section_size(&self) -> usize {
-        self.peer_mgr.routing_table().min_section_size()
+        self.routing_table().min_section_size()
     }
 }
 
@@ -2938,13 +2945,12 @@ impl Base for Node {
         if let Authority::Client { ref client_key, .. } = *auth {
             client_key == self.full_id.public_id().signing_public_key()
         } else {
-            self.is_proper() && self.peer_mgr.routing_table().in_authority(auth)
+            self.is_proper() && self.routing_table().in_authority(auth)
         }
     }
 
     fn close_group(&self, name: XorName, count: usize) -> Option<Vec<XorName>> {
-        self.peer_mgr
-            .routing_table()
+        self.routing_table()
             .closest_names(&name, count)
             .map(|names| names.into_iter().cloned().collect_vec())
     }
@@ -2974,11 +2980,6 @@ impl Base for Node {
 
 #[cfg(feature = "use-mock-crust")]
 impl Node {
-    /// Routing table of this node.
-    pub fn routing_table(&self) -> &RoutingTable<XorName> {
-        self.peer_mgr.routing_table()
-    }
-
     /// Resends all unacknowledged messages.
     pub fn resend_unacknowledged(&mut self) -> bool {
         let timer_tokens = self.ack_mgr.timer_tokens();
@@ -3063,7 +3064,6 @@ impl Bootstrapped for Node {
             }
             PrefixSection(ref prefix) => {
                 self.peer_mgr
-                    .routing_table()
                     .all_sections()
                     .into_iter()
                     .filter_map(|(p, members)| if prefix.is_compatible(&p) {
@@ -3081,7 +3081,7 @@ impl Bootstrapped for Node {
         match self.get_signature_target(&signed_msg.routing_message().src, route) {
             None => Ok(()),
             Some(our_name) if our_name == *self.name() => {
-                let min_section_size = self.peer_mgr.routing_table().min_section_size();
+                let min_section_size = self.routing_table().min_section_size();
                 if let Some((msg, route)) =
                     self.sig_accumulator.add_message(signed_msg, min_section_size, route) {
                     if self.in_authority(&msg.routing_message().dst) {

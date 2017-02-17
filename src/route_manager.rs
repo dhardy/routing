@@ -105,7 +105,7 @@ pub struct RouteManager {
     /// Peers we expect to connect to
     expected_peers: HashMap<XorName, Instant>,
     // Log of routing table changes
-    log: MemberLog,
+    pub log: MemberLog,
 }
 
 impl RouteManager {
@@ -174,6 +174,7 @@ impl RouteManager {
     /// Returns the identifier for the last log entry and the member list for our section at this
     /// time.
     pub fn accept_as_candidate(&mut self,
+                               peer_mgr: &PeerManager,
                                candidate_name: XorName,
                                client_auth: Authority<XorName>)
                                -> Result<(LogId, BTreeSet<PublicId>), RoutingError> {
@@ -186,7 +187,7 @@ impl RouteManager {
         let our_section = self.log.table().our_section();
         // TODO: we may need a new log entry here; we should get the section list from the log once
         // it's the definitive source.)
-        Ok((log_id, self.get_pub_ids(our_section).into()))
+        Ok((log_id, peer_mgr.get_pub_ids(our_section, self.log.own_id()).into()))
     }
 
     /// Verifies proof of resource.  If the response is not the current candidate, or if it fails
@@ -409,6 +410,8 @@ impl RouteManager {
     /// Adds the given prefix to the routing table, splitting or merging as necessary. Returns the
     /// list of peers that have been dropped and need to be disconnected.
     pub fn add_prefix(&mut self, prefix: Prefix<XorName>) -> Vec<(XorName, PeerId)> {
+        // FIXME: do we still want this func?
+        /*
         let names_to_drop = self.log.table_mut().add_prefix(prefix);
         let old_expected_peers = mem::replace(&mut self.expected_peers, HashMap::new());
         self.expected_peers = old_expected_peers.into_iter()
@@ -421,23 +424,28 @@ impl RouteManager {
                 None
             })
             .collect()
+        */
+
+        vec![]
     }
 
     /// Wraps `RoutingTable::should_merge` with an extra check.
     ///
     /// Returns sender prefix, merge prefix, then sections.
-    pub fn should_merge(&self) -> Option<(Prefix<XorName>, Prefix<XorName>, SectionMap)> {
+    pub fn should_merge(&self,
+                        peer_mgr: &PeerManager)
+                        -> Option<(Prefix<XorName>, Prefix<XorName>, SectionMap)> {
         if !self.log.table().they_want_to_merge() && !self.expected_peers.is_empty() {
             return None;
         }
         self.log.table().should_merge().map(|merge_details| {
-            let sections =
-                merge_details.sections
-                    .into_iter()
-                    .map(|(prefix, members)| {
-                        (prefix, self.get_pub_ids(&members).into_iter().collect())
-                    })
-                    .collect();
+            let sections = merge_details.sections
+                .into_iter()
+                .map(|(prefix, members)| {
+                    (prefix,
+                     peer_mgr.get_pub_ids(&members, self.log.own_id()).into_iter().collect())
+                })
+                .collect();
             (merge_details.sender_prefix, merge_details.merge_prefix, sections)
         })
     }
@@ -519,12 +527,12 @@ impl RouteManager {
     }
 
     /// Returns the public IDs of all routing table entries, sorted by section.
-    pub fn pub_ids_by_section(&self) -> SectionMap {
+    pub fn pub_ids_by_section(&self, peer_mgr: &PeerManager) -> SectionMap {
         self.log
             .table()
             .all_sections()
             .into_iter()
-            .map(|(prefix, names)| (prefix, self.get_pub_ids(&names)))
+            .map(|(prefix, names)| (prefix, peer_mgr.get_pub_ids(&names, self.log.own_id())))
             .collect()
     }
 
