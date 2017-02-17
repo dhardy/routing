@@ -2089,11 +2089,7 @@ impl Node {
         let split_us = prefix == *self.our_prefix();
         // None of the `peers_to_drop` will have been in our section, so no need to notify Routing
         // user about them.
-        let (peers_to_drop, our_new_prefix) = self.route_mgr
-            .split_section(&mut self.peer_mgr, prefix);
-        if let Some(new_prefix) = our_new_prefix {
-            outbox.send_event(Event::SectionSplit(new_prefix));
-        }
+        let peers_to_drop = self.route_mgr.split_section(&mut self.peer_mgr, prefix);
 
         for (_name, peer_id) in peers_to_drop {
             self.disconnect_peer(&peer_id);
@@ -2117,6 +2113,8 @@ impl Node {
             }
             // TODO: this is redundant
             self.send_section_update();
+
+            outbox.send_event(Event::SectionSplit(prefix));
         }
 
         // Clippy 0.0.104 is wrong since it is not possible to _move_ values out of an array.

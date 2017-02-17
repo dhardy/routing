@@ -383,8 +383,8 @@ impl RouteManager {
     pub fn split_section(&mut self,
                          peer_mgr: &mut PeerManager,
                          prefix: Prefix<XorName>)
-                         -> (Vec<(XorName, PeerId)>, Option<Prefix<XorName>>) {
-        let (names_to_drop, our_new_prefix) = self.table.split(prefix);
+                         -> Vec<(XorName, PeerId)> {
+        let names_to_drop = self.table.split(prefix);
         let ids_to_drop = peer_mgr.drop_via_split(names_to_drop);
 
         let removal_keys = self.candidates
@@ -405,7 +405,7 @@ impl RouteManager {
             .filter(|&(ref name, _)| self.table.need_to_add(name) == Ok(()))
             .collect();
 
-        (ids_to_drop, our_new_prefix)
+        ids_to_drop
     }
 
     /// Adds the given prefix to the routing table, splitting or merging as necessary. Returns the

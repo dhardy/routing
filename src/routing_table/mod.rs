@@ -546,13 +546,12 @@ impl<T: Binary + Clone + Copy + Debug + Default + Hash + Xorable> RoutingTable<T
     /// If any of the sections don't satisfy the invariant any more (i.e. only differ in one bit
     /// from our own prefix), they are removed and those contacts are returned.  If the split is
     /// happening to our own section, our new prefix is returned in the optional field.
-    pub fn split(&mut self, prefix: Prefix<T>) -> (Vec<T>, Option<Prefix<T>>) {
-        let mut result = vec![];
+    pub fn split(&mut self, prefix: Prefix<T>) -> Vec<T> {
         if prefix == self.our_prefix {
-            result = self.split_our_section();
-            return (result, Some(self.our_prefix));
+            return self.split_our_section();
         }
 
+        let mut result = vec![];
         if let Some(to_split) = self.sections.remove(&prefix) {
             let prefix0 = prefix.pushed(false);
             let prefix1 = prefix.pushed(true);
@@ -567,7 +566,7 @@ impl<T: Binary + Clone + Copy + Debug + Default + Hash + Xorable> RoutingTable<T
                 }
             }
         }
-        (result, None)
+        result
     }
 
     /// Adds the given prefix to the routing table, merging or splitting if necessary. Returns the
@@ -583,8 +582,7 @@ impl<T: Binary + Clone + Copy + Debug + Default + Hash + Xorable> RoutingTable<T
                 .keys()
                 .chain(iter::once(&self.our_prefix))
                 .find(|p| p.is_compatible(&prefix) && p.bit_count() < prefix.bit_count()) {
-            let (dropped_nodes, _opt_our_pfx) = self.split(shorter_pfx);
-            result.extend(dropped_nodes);
+            result.extend(self.split(shorter_pfx));
         }
 
         // If it's neither our neighbour nor compatible, we need to merge our own until it is
