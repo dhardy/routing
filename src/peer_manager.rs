@@ -20,13 +20,11 @@ use error::RoutingError;
 use id::PublicId;
 use itertools::Itertools;
 use rand;
-use routing_table::{Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState, Prefix,
-                    RemovalDetails, RoutingTable};
-use routing_table::Error as RoutingTableError;
+use routing_table::Authority;
 use rust_sodium::crypto::hash::sha256;
 use rust_sodium::crypto::sign;
-use std::{error, fmt, mem};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::{error, fmt};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::collections::hash_map::Values;
 use std::time::{Duration, Instant};
 use types::MessageId;
@@ -676,7 +674,7 @@ impl PeerManager {
     pub fn set_searching_for_tunnel(&mut self,
                                     peer_id: PeerId,
                                     pub_id: PublicId,
-                                    routing_table: &RoutingTable<XorName>)
+                                    close_names: BTreeSet<XorName>)
                                     -> Vec<(XorName, PeerId)> {
         match self.get_state_by_name(pub_id.name()) {
             Some(&PeerState::Client) |
@@ -689,11 +687,10 @@ impl PeerManager {
 
         let _ = self.insert_peer(pub_id, Some(peer_id), PeerState::SearchingForTunnel);
 
-        let close_section = routing_table.other_close_names(pub_id.name()).unwrap_or_default();
         self.peer_map
             .peers()
             .filter_map(|peer| peer.peer_id.map(|peer_id| (*peer.name(), peer_id)))
-            .filter(|&(name, _)| close_section.contains(&name))
+            .filter(|&(name, _)| close_names.contains(&name))
             .collect()
     }
 
@@ -908,16 +905,11 @@ impl PeerManager {
 
     fn insert_peer(&mut self, pub_id: PublicId, peer_id: Option<PeerId>, state: PeerState) -> bool {
         let result = self.peer_map.insert(Peer::new(pub_id, peer_id, state)).is_some();
-        self.remove_expired();
+        self.remove_expired_peers();
         result
     }
 
-    fn remove_expired(&mut self) {
-        self.remove_expired_peers();
-        self.cleanup_proxy_peer_id();
-    }
-
-    fn remove_expired_peers(&mut self) {
+    pub fn remove_expired_peers(&mut self) {
         let expired_names = self.peer_map
             .peers()
             .filter(|peer| peer.is_expired())
@@ -942,11 +934,7 @@ impl PeerManager {
 
 impl fmt::Debug for PeerManager {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "FIXME")
-        /*
-               self.log.table().our_name(),
-               self.log.table().our_prefix())
-               */
+        write!(formatter, "PeerManager")
     }
 }
 

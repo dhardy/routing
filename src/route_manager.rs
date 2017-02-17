@@ -15,7 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use crust::{PeerId, PrivConnectionInfo, PubConnectionInfo};
+use crust::PeerId;
 use error::RoutingError;
 use id::PublicId;
 use member_log::{LogId, MemberChange, MemberEntry, MemberLog, MemberLogError};
@@ -25,8 +25,8 @@ use routing_table::{Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState
                     RemovalDetails, RoutingTable};
 use routing_table::Error as RoutingTableError;
 use signature_accumulator::ACCUMULATION_TIMEOUT_SECS;
+use std::{fmt, mem};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::mem;
 use std::time::{Duration, Instant};
 use xor_name::XorName;
 
@@ -98,7 +98,6 @@ impl Candidate {
 }
 
 /// Route manager
-#[derive(Debug)]
 pub struct RouteManager {
     /// Joining nodes which want to join our section
     candidates: HashMap<XorName, Candidate>,
@@ -365,10 +364,7 @@ impl RouteManager {
     /// Tries to add the given peer to the routing table. If successful, this returns `Ok(true)` if
     /// the addition should cause our section to split or `Ok(false)` if the addition shouldn't
     /// cause a split.
-    pub fn add_to_routing_table(&mut self,
-                                pub_id: &PublicId,
-                                peer_id: &PeerId)
-                                -> Result<(), RoutingTableError> {
+    pub fn add_to_routing_table(&mut self, pub_id: &PublicId) -> Result<(), RoutingTableError> {
         let _ = self.expected_peers.remove(pub_id.name());
         self.log.table_mut().add(*pub_id.name())
     }
@@ -409,9 +405,10 @@ impl RouteManager {
 
     /// Adds the given prefix to the routing table, splitting or merging as necessary. Returns the
     /// list of peers that have been dropped and need to be disconnected.
-    pub fn add_prefix(&mut self, prefix: Prefix<XorName>) -> Vec<(XorName, PeerId)> {
-        // FIXME: do we still want this func?
-        /*
+    pub fn add_prefix(&mut self,
+                      peer_mgr: &mut PeerManager,
+                      prefix: Prefix<XorName>)
+                      -> Vec<(XorName, PeerId)> {
         let names_to_drop = self.log.table_mut().add_prefix(prefix);
         let old_expected_peers = mem::replace(&mut self.expected_peers, HashMap::new());
         self.expected_peers = old_expected_peers.into_iter()
@@ -419,14 +416,12 @@ impl RouteManager {
             .collect();
         names_to_drop.into_iter()
             .filter_map(|name| if let Some(peer_id) = peer_mgr.remove_by_name(&name) {
-                (name, peer_id)
+                Some((name, peer_id))
             } else {
                 None
             })
             .collect()
-        */
 
-        vec![]
     }
 
     /// Wraps `RoutingTable::should_merge` with an extra check.
@@ -454,11 +449,12 @@ impl RouteManager {
     // taken by the node, and the list of peers to which we should now connect (only those within
     // the merging sections for now).
     pub fn merge_own_section(&mut self,
+                             peer_mgr: &mut PeerManager,
                              sender_prefix: Prefix<XorName>,
                              merge_prefix: Prefix<XorName>,
                              sections: SectionMap)
                              -> (OwnMergeState<XorName>, Vec<PublicId>) {
-        // FIXME: self.remove_expired();
+        peer_mgr.remove_expired_peers();
         let needed = sections.iter()
             .flat_map(|(_, pub_ids)| pub_ids)
             .filter(|pub_id| !self.log.table().has(pub_id.name()))
@@ -467,7 +463,7 @@ impl RouteManager {
 
         let sections_as_names = sections.into_iter()
             .map(|(prefix, members)| {
-                (prefix, members.into_iter().map(|pub_id| *pub_id.name()).collect::<HashSet<_>>())
+                (prefix, members.into_iter().map(|pub_id| *pub_id.name()).collect::<BTreeSet<_>>())
             })
             .collect();
 
@@ -490,10 +486,11 @@ impl RouteManager {
     }
 
     pub fn merge_other_section(&mut self,
+                               peer_mgr: &mut PeerManager,
                                prefix: Prefix<XorName>,
                                section: BTreeSet<PublicId>)
                                -> HashSet<PublicId> {
-        // FIXME: self.remove_expired();
+        peer_mgr.remove_expired_peers();
 
         let merge_details = OtherMergeDetails {
             prefix: prefix,
@@ -572,6 +569,15 @@ impl RouteManager {
         for name in expired_expected {
             let _ = self.expected_peers.remove(&name);
         }
+    }
+}
+
+impl fmt::Debug for RouteManager {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter,
+               "RouteManager({:?}, {:?})",
+               self.log.table().our_name(),
+               self.log.table().our_prefix())
     }
 }
 
