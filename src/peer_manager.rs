@@ -983,10 +983,8 @@ mod tests {
 
     #[test]
     pub fn connection_info_prepare_receive() {
-        let min_section_size = 8;
         let orig_pub_id = *FullId::new().public_id();
-        let log = MemberLog::new_first(orig_pub_id, min_section_size);
-        let mut peer_mgr = PeerManager::new(log);
+        let mut peer_mgr = PeerManager::new();
 
         let our_connection_info = PrivConnectionInfo(PeerId(0), Endpoint(0));
         let their_connection_info = PubConnectionInfo(PeerId(1), Endpoint(1));
@@ -1022,10 +1020,8 @@ mod tests {
 
     #[test]
     pub fn connection_info_receive_prepare() {
-        let min_section_size = 8;
         let orig_pub_id = *FullId::new().public_id();
-        let log = MemberLog::new_first(orig_pub_id, min_section_size);
-        let mut peer_mgr = PeerManager::new(log);
+        let mut peer_mgr = PeerManager::new();
         let our_connection_info = PrivConnectionInfo(PeerId(0), Endpoint(0));
         let their_connection_info = PubConnectionInfo(PeerId(1), Endpoint(1));
         let original_msg_id = MessageId::new();
