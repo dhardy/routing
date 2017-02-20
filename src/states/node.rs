@@ -821,7 +821,6 @@ impl Node {
                 OtherSectionMerge(..) |
                 ExpectCandidate { .. } |
                 AcceptAsCandidate { .. } |
-                CandidateApproval { .. } |
                 ConnectionInfoRequest { .. } |
                 SectionUpdate { .. } |
                 RoutingTableRequest(..) |
@@ -879,9 +878,6 @@ impl Node {
             (ConnectionInfoResponse(conn_info), ManagedNode(src_name), dst @ ManagedNode(_)) => {
                 self.handle_connection_info_response(conn_info, src_name, dst)
             }
-            (CandidateApproval { candidate_id, client_auth, .. }, Section(_), Section(_)) => {
-                self.handle_candidate_approval(candidate_id, client_auth, outbox)
-            }
             (NodeApproval { sections }, Section(_), Client { .. }) => {
                 self.handle_node_approval(&sections, outbox)
             }
@@ -929,8 +925,7 @@ impl Node {
     fn handle_candidate_approval(&mut self,
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
-                                 outbox: &mut EventBox)
-                                 -> Result<(), RoutingError> {
+                                 outbox: &mut EventBox) {
         for peer_id in self.route_mgr.remove_expired_candidates(&self.peer_mgr) {
             self.disconnect_peer(&peer_id);
         }
@@ -980,7 +975,6 @@ impl Node {
         if let Some(peer_id) = opt_peer_id {
             self.add_to_routing_table(&candidate_id, &peer_id, outbox);
         }
-        Ok(())
     }
 
     fn handle_node_approval(&mut self,
@@ -1411,9 +1405,16 @@ impl Node {
         }
 
         if self.our_prefix().matches(public_id.name()) && self.routing_table().we_should_split() {
-            match self.route_mgr.make_split_entry(&self.peer_mgr) {
-                Ok(entry) => self.send_log_entry_to_section(entry),
-                Err(e) => error!("Failed to make split entry: {:?}", e),
+            match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
+                Ok((prev_id, members)) => {
+                    let change = MemberChange::SectionSplit { prev_id: prev_id };
+                    let entry = MemberEntry::new(members, change);
+                    self.send_log_entry_to_section(entry);
+                }
+                Err(e) => {
+                    error!("{:?} Failed to make split entry: {:?}", self, e);
+                    return;
+                }
             }
         } else {
             // TODO: when exactly might we want to merge given an added node?
@@ -2342,11 +2343,22 @@ impl Node {
         }
 
         let src = Authority::Section(*candidate_id.name());
-        let response_content = MessageContent::CandidateApproval {
-            candidate_id: candidate_id,
-            client_auth: client_auth,
-            sections: sections,
+        let entry = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
+            Ok((prev_id, members)) => {
+                let change = MemberChange::AddNode {
+                    prev_id: prev_id,
+                    new_id: candidate_id,
+                    client_auth: client_auth,
+                    sections: sections,
+                };
+                MemberEntry::new(members, change)
+            }
+            Err(e) => {
+                warn!("{:?} Failed to create MemberChange::AddNode: {:?}", self, e);
+                return Ok(());
+            }
         };
+        let response_content = MessageContent::MemberLog(entry);
         info!("{:?} Resource proof duration has finished. Voting to approve candidate {}.",
               self,
               candidate_id.name());
@@ -2387,8 +2399,8 @@ impl Node {
         self.log_entry_timeout_token = None;
         self.pending_log_entries.sort(); // sorts, with highest priority last
         while let Some(entry) = self.pending_log_entries.pop() {
-            if self.validate_pending_entry(&entry) {
-                self.send_log_entry_to_section(entry);
+            if let Some(new_entry) = self.validate_and_update(entry) {
+                self.send_log_entry_to_section(new_entry);
                 break;
             }
             // else: drop entry and check for another
@@ -2397,30 +2409,63 @@ impl Node {
 
     fn handle_log_entry(&mut self, entry: MemberEntry, outbox: &mut EventBox) {
         self.reset_log_entry_timer();
+
+        enum Action {
+            None,
+            Split,
+            Add(PublicId, Authority<XorName>),
+        }
+
         // We first match in PeerManager then match here too:
-        let need_split = if let Some(entry) = self.route_mgr.handle_log_entry(entry) {
+        let action = if let Some(entry) = self.route_mgr.handle_log_entry(entry) {
             match entry.change {
                 MemberChange::InitialNode(_) |
-                MemberChange::StartPoint(_) => false,
-                MemberChange::SectionSplit { .. } => true,
+                MemberChange::StartPoint(_) => Action::None,
+                MemberChange::SectionSplit { .. } => Action::Split,
+                MemberChange::AddNode { new_id, client_auth, .. } => {
+                    Action::Add(new_id, client_auth)
+                }
             }
         } else {
-            false
+            Action::None
         };
         // Unfortunately the lifetime lock from `self.peer_mgr` means we can't inline this:
-        if need_split {
-            let our_prefix = *self.our_prefix();
-            self.handle_section_split(our_prefix, outbox);
+        match action {
+            Action::None => {}
+            Action::Split => {
+                let our_prefix = *self.our_prefix();
+                self.handle_section_split(our_prefix, outbox);
+            }
+            Action::Add(new_id, client_auth) => {
+                self.handle_candidate_approval(new_id, client_auth, outbox);
+            }
         }
     }
 
-    // returns: true iff we still want to send entry (presumably we did once)
-    fn validate_pending_entry(&self, entry: &MemberEntry) -> bool {
-        match entry.change {
+    /// Checks that an uncommitted entry is still applicable, and if so updates it.
+    fn validate_and_update(&self, entry: MemberEntry) -> Option<MemberEntry> {
+        let is_valid = match entry.change {
             // should never be accumulated:
             MemberChange::InitialNode(_) |
             MemberChange::StartPoint(_) => false,
             MemberChange::SectionSplit { .. } => self.routing_table().we_should_split(),
+            MemberChange::AddNode { ref new_id, .. } => {
+                self.route_mgr.is_valid_candidate(&self.peer_mgr, new_id)
+            }
+        };
+        if !is_valid {
+            return None;
+        }
+
+        match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
+            Ok((prev_id, members)) => {
+                let change = entry.change.update_prev(prev_id);
+                Some(MemberEntry::new(members, change))
+            }
+            Err(e) => {
+                warn!("{:?} Unable to get log details: {:?}", self, e);
+                None
+            }
         }
     }
 

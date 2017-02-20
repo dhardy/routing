@@ -652,15 +652,6 @@ pub enum MessageContent {
         /// The message's unique identifier.
         message_id: MessageId,
     },
-    /// Sent among Group Y to vote to accept a joining node.
-    CandidateApproval {
-        /// The `PublicId` of the candidate
-        candidate_id: PublicId,
-        /// Client authority of the candidate
-        client_auth: Authority<XorName>,
-        /// The `PublicId`s of all routing table contacts shared by the nodes in our section.
-        sections: SectionMap,
-    },
     /// Approves the joining node as a routing node.
     ///
     /// Sent from Group Y to the joining node.
@@ -824,14 +815,6 @@ impl Debug for MessageContent {
                        expect_id,
                        client_auth,
                        message_id)
-            }
-            CandidateApproval { ref candidate_id, ref client_auth, ref sections } => {
-                write!(formatter,
-                       "CandidateApproval {{ candidate_id: {:?}, client_auth: {:?}, sections: \
-                        {:?} }}",
-                       candidate_id,
-                       client_auth,
-                       sections)
             }
             NodeApproval { ref sections } => write!(formatter, "NodeApproval {{ {:?} }}", sections),
             MemberLog(ref entry) => write!(formatter, "MemberLog {{ {:?} }}", entry),

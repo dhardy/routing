@@ -18,7 +18,7 @@
 use crust::PeerId;
 use error::RoutingError;
 use id::PublicId;
-use member_log::{LogId, MemberChange, MemberEntry, MemberLog, MemberLogError};
+use member_log::{LogId, MemberEntry, MemberLog, MemberLogError};
 use peer_manager::PeerManager;
 use resource_proof::ResourceProof;
 use routing_table::{Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState, Prefix,
@@ -256,6 +256,19 @@ impl RouteManager {
                   self.table.our_prefix());
         }
         Err(RoutingError::UnknownCandidate)
+    }
+
+    /// Is this a valid candidate?
+    pub fn is_valid_candidate(&self, peer_mgr: &PeerManager, cand_pub_id: &PublicId) -> bool {
+        if let Some((name, _candidate)) =
+            self.candidates
+                .iter()
+                .find(|&(_, cand)| cand.passed_our_challenge && !cand.is_approved()) {
+            if let Some(pub_id) = peer_mgr.get_pub_id(name) {
+                return cand_pub_id == pub_id;
+            }
+        }
+        false
     }
 
     /// Handles accumulated candidate approval.  Marks the candidate as `Approved` and returns the
@@ -553,12 +566,12 @@ impl RouteManager {
             .collect()
     }
 
-    /// Make a log entry to split
-    pub fn make_split_entry(&self, peer_mgr: &PeerManager) -> Result<MemberEntry, RoutingError> {
-        let change = MemberChange::SectionSplit {
-            prev_id: self.log.last_id().ok_or(MemberLogError::InvalidState)?,
-        };
-        Ok(MemberEntry::new(self.get_current_members(peer_mgr), change))
+    /// Get previous log identifier and member list
+    pub fn get_prev_id_and_members(&self,
+                                   peer_mgr: &PeerManager)
+                                   -> Result<(LogId, BTreeSet<PublicId>), RoutingError> {
+        Ok((self.log.last_id().ok_or(MemberLogError::InvalidState)?,
+            self.get_current_members(peer_mgr)))
     }
 
     /// Removes timed out expected peers (those we tried to connect to).

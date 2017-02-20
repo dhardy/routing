@@ -21,10 +21,11 @@ use id::PublicId;
 use maidsafe_utilities::serialisation::serialise;
 use rust_sodium::crypto::hash::sha256;
 use std::fmt;
-use std::iter;
 use std::collections::BTreeSet;
 use xor_name::XorName;
 use std::cmp::Ordering;
+use routing_table::Authority;
+use route_manager::SectionMap;
 
 /// We use this to identify log entries.
 //TODO: why are we using SHA256?
@@ -43,11 +44,18 @@ pub enum MemberChange {
     SectionSplit {
         prev_id: LogId,
     },
-    /*
-    NodeAdded {
-        prev_hash: LogId,
-        new_name: XorName,
+    /// Record the approval of a candidate to become a full routing node.
+    AddNode {
+        prev_id: LogId,
+        new_id: PublicId,
+        // TODO: we don't really want these details in the log. Just adding now to simplify
+        // converting existing code.
+        /// Client authority of the candidate
+        client_auth: Authority<XorName>,
+        /// The `PublicId`s of all routing table contacts shared by the nodes in our section.
+        sections: SectionMap,
     },
+    /*
     NodeLost {
         prev_hash: LogId,
         lost_name: XorName,
@@ -64,11 +72,26 @@ pub enum MemberChange {
 impl MemberChange {
     // higher value is higher priority, equal only if types are equal
     fn priority(&self) -> u32 {
+        use self::MemberChange::*;
         match *self {
-            MemberChange::InitialNode(_) => 10000,
-            MemberChange::StartPoint(_) => 9999,
-            MemberChange::SectionSplit{..} => 5000,
+            InitialNode(_) => 10000,
+            StartPoint(_) => 9999,
+            SectionSplit {..} => 2000,
+            AddNode {..} => 1000,
         }
+    }
+    
+    /// Update the previous entry identifier, if applicable.
+    pub fn update_prev(mut self, id: LogId) -> Self {
+        use self::MemberChange::*;
+        match self {
+            InitialNode(_) | StartPoint(_) => {}
+            SectionSplit { ref mut prev_id } |
+            AddNode { ref mut prev_id, .. } => {
+                *prev_id = id
+            }
+        }
+        self
     }
 }
 
@@ -80,10 +103,8 @@ impl MemberChange {
 pub struct MemberEntry {
     // Identifier of this change, applied over the previous change
     pub id: LogId,
-    // List of members after applying this change, sorted by name.
-    // TODO: do we want to list all PublicIds in each entry?
-    // TODO: in the case of a split, this is all members _before_ the split, because we want the
-    // one entry to be agreed by the splitting section. Should we change something?
+    // List of members before applying this change, sorted by name.
+    // TODO: do we want to only store diffs to member list instead?
     pub members: BTreeSet<PublicId>,
     // Change itself
     pub change: MemberChange,
@@ -108,7 +129,7 @@ impl PartialOrd for MemberEntry {
 
 
 impl MemberEntry {
-    /// Create a new entry, given the members of the section after a change, and the change itself.
+    /// Create a new entry, given the members of the section before a change, and the change itself.
     ///
     /// The list of members is sorted in this method.
     pub fn new(members: BTreeSet<PublicId>, change: MemberChange) -> Self {
@@ -134,7 +155,8 @@ impl MemberEntry {
     }
 
     // TODO: maybe return a Result<(), SomeError>
-    fn is_successor_of(&self, prev_entry: &MemberEntry) -> bool {
+    /// Checks that (one of) our own "previous entry identifiers" is `prev_entry`.
+    pub fn is_successor_of(&self, prev_entry: &MemberEntry) -> bool {
         use self::MemberChange::*;
 
         // Check hash.
@@ -144,14 +166,13 @@ impl MemberEntry {
                 return false;
             }
             /*
-            NodeAdded { prev_hash, .. } |
             NodeLost { prev_hash, .. } |
             */
-            SectionSplit { prev_id, .. } => {
+            SectionSplit { prev_id, .. } | AddNode { prev_id, .. } => {
                 if prev_id != prev_entry.id {
                     return false;
                 }
-            }
+            },
             /*
             SectionMerge { left_hash, right_hash, .. } => {
                 let prev_hash = prev_entry.id;
@@ -179,7 +200,7 @@ impl MemberLog {
     /// the network).
     pub fn new_first(our_id: PublicId) -> Self {
         let change = MemberChange::InitialNode(*our_id.name());
-        let entry = MemberEntry::new(iter::once(our_id.clone()).collect(), change);
+        let entry = MemberEntry::new(BTreeSet::new(), change);
         MemberLog { log: vec![entry], own_id: our_id }
     }
 
@@ -228,7 +249,7 @@ impl MemberLog {
     pub fn own_id(&self) -> &PublicId {
         &self.own_id
     }
-
+    
     /// Return the last identifier in the log, or none if the log is entry.
     // TODO: I don't think we'll want this eventually. At least, check usages.
     pub fn last_id(&self) -> Option<LogId> {
