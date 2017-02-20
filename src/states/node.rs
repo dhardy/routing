@@ -2486,6 +2486,7 @@ impl Node {
     // src: always ourself
     // dst: always our section
     fn send_log_entry_to_section(&mut self, entry: MemberEntry) {
+        debug!("{:?} Attempting to agree log entry: {:?}", self, entry);
         if self.log_entry_timeout_token.is_none() {
             self.log_entry_timeout_token = Some(self.timer
                 .schedule(Duration::from_secs(LOG_ENTRY_TIMEOUT_SECS)));

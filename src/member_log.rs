@@ -29,7 +29,17 @@ use route_manager::SectionMap;
 
 /// We use this to identify log entries.
 //TODO: why are we using SHA256?
-pub type LogId = sha256::Digest;
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
+pub struct LogId {
+    digest: sha256::Digest,
+}
+
+impl fmt::Debug for LogId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let bytes = self.digest.as_ref();
+        write!(f, "{:02x}{:02x}{:02x}..", bytes[0], bytes[1], bytes[2])
+    }
+}
 
 /// What happened in a change
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, Eq, PartialEq, Hash)]
@@ -99,7 +109,7 @@ impl MemberChange {
 // TODO: maybe delete this entirely in favour of just using MemberChange, the id is computable
 // from the change field (and doesn't need to be stored).
 // TODO: should fields be pub?
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, Eq, PartialEq, Hash)]
+#[derive(Clone, RustcEncodable, RustcDecodable, Eq, PartialEq, Hash)]
 pub struct MemberEntry {
     // Identifier of this change, applied over the previous change
     pub id: LogId,
@@ -144,7 +154,7 @@ impl MemberEntry {
             // Find a way of handling this; ideally don't return a `Result` everywhere.
             buf.extend_from_slice(&unwrap!(serialise(&members)));
             buf.extend_from_slice(&unwrap!(serialise(&change)));
-            sha256::hash(&buf)
+            LogId { digest: sha256::hash(&buf) }
         };
 
         MemberEntry {
@@ -188,6 +198,13 @@ impl MemberEntry {
     }
 }
 
+impl fmt::Debug for MemberEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "MemberEntry {{ id: {:?}, members: {:?}, change: {:?}", &self.id, &self.members, &self.change)
+    }
+}
+
+
 /// Log of section membership changes
 #[derive(Clone)]
 pub struct MemberLog {
@@ -218,7 +235,7 @@ impl MemberLog {
     /// us).
     pub fn relocate(&mut self, our_id: PublicId, log_id: LogId, members: BTreeSet<PublicId>) {
         if !self.log.is_empty() {
-            warn!("{:?} Reset to {:?} from non-empty log.", self, our_id.name());
+            warn!("Node({:?}) Reset to {:?} from non-empty log: {:?}", self.own_id.name(), our_id.name(), self);
         }
 
         self.own_id = our_id;
@@ -233,14 +250,15 @@ impl MemberLog {
             if !entry.is_successor_of(prev) {
                 // This is an error in our collective-agreement algorithm:
                 // TODO: if we have a problem here, we should try to re-sync the log
-                error!("{:?} Attempted to append an invalid successor to log (may not be recoverable).", self);
+                error!("Node({:?}) Attempted to append an invalid successor to log (may not be recoverable); log: {:?}", self.own_id.name(), self);
                 return None;
             }
         } else {
             // This is a fatal code error, and probably going to happen again if rebooted.
-            panic!("{:?} Attempted to append to log before initialisation.", self);
+            panic!("Node({:?}) Attempted to append to log before initialisation.", self.own_id.name());
         }
 
+        info!("Node({:?}) Appending log entry: {:?}", self.own_id.name(), entry);
         self.log.push(entry);
         self.log.last()
     }
@@ -259,7 +277,7 @@ impl MemberLog {
 
 impl fmt::Debug for MemberLog {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "Member log of {:?}:", self.own_id)?;
+        write!(f, "Member log of {:?}:", self.own_id)?;
         if self.log.len() <= 3 {
             write!(f, "\tLog: {:?}", self.log)
         } else {
