@@ -878,8 +878,8 @@ impl Node {
             (ConnectionInfoResponse(conn_info), ManagedNode(src_name), dst @ ManagedNode(_)) => {
                 self.handle_connection_info_response(conn_info, src_name, dst)
             }
-            (NodeApproval { sections }, Section(_), Client { .. }) => {
-                self.handle_node_approval(&sections, outbox)
+            (NodeApproval { log_id, sections }, Section(_), Client { .. }) => {
+                self.handle_node_approval(log_id, sections, outbox)
             }
             (SectionUpdate { prefix, members }, Section(_), PrefixSection(_)) => {
                 self.handle_section_update(prefix, members, outbox)
@@ -923,6 +923,7 @@ impl Node {
     }
 
     fn handle_candidate_approval(&mut self,
+                                 entry_id: LogId,
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
                                  outbox: &mut EventBox) {
@@ -962,6 +963,7 @@ impl Node {
             // Send the _current_ routing table. If this doesn't accumulate, we expect the candidate
             // to disconnect from us.
             let content = MessageContent::NodeApproval {
+                log_id: entry_id,
                 sections: self.route_mgr.pub_ids_by_section(&self.peer_mgr),
             };
             if let Err(error) = self.send_routing_message(src, client_auth, content) {
@@ -978,7 +980,8 @@ impl Node {
     }
 
     fn handle_node_approval(&mut self,
-                            sections: &SectionMap,
+                            log_id: LogId,
+                            sections: SectionMap,
                             outbox: &mut EventBox)
                             -> Result<(), RoutingError> {
         if self.is_approved {
@@ -1007,16 +1010,16 @@ impl Node {
         self.send_section_list_signature(our_prefix, None);
 
         let src = Authority::ManagedNode(*self.name());
-        for section in sections.values() {
-            for pub_id in section.iter() {
+        for (_prefix, section) in sections.into_iter() {
+            for pub_id in section.into_iter() {
                 if !self.routing_table().has(pub_id.name()) {
-                    self.route_mgr.expect_peer(pub_id);
+                    self.route_mgr.expect_peer(&pub_id);
                     debug!("{:?} Sending connection info to {:?} on NodeApproval.",
                            self,
                            pub_id);
                     let node_auth = Authority::ManagedNode(*pub_id.name());
                     if let Err(error) =
-                        self.send_connection_info_request(*pub_id, src, node_auth, outbox) {
+                        self.send_connection_info_request(pub_id, src, node_auth, outbox) {
                         debug!("{:?} - Failed to send connection info to {:?}: {:?}",
                                self,
                                pub_id,
@@ -1025,6 +1028,12 @@ impl Node {
                 }
             }
         }
+
+        // TODO: getting members like this doesn't make much sense.
+        // TODO: we may want to get and append all log entries since relocating in
+        // GetNodeNameResponse instead of relocating _again_ here.
+        let members = self.route_mgr.get_current_members(&self.peer_mgr);
+        self.route_mgr.relocate(*self.full_id.public_id(), log_id, members);
 
         info!("{:?} Resource proof challenges completed. This node has been approved to join the \
                network!",
@@ -2413,7 +2422,7 @@ impl Node {
         enum Action {
             None,
             Split,
-            Add(PublicId, Authority<XorName>),
+            Add(LogId, PublicId, Authority<XorName>),
         }
 
         // We first match in PeerManager then match here too:
@@ -2423,7 +2432,7 @@ impl Node {
                 MemberChange::StartPoint(_) => Action::None,
                 MemberChange::SectionSplit { .. } => Action::Split,
                 MemberChange::AddNode { new_id, client_auth, .. } => {
-                    Action::Add(new_id, client_auth)
+                    Action::Add(entry.id, new_id, client_auth)
                 }
             }
         } else {
@@ -2436,8 +2445,8 @@ impl Node {
                 let our_prefix = *self.our_prefix();
                 self.handle_section_split(our_prefix, outbox);
             }
-            Action::Add(new_id, client_auth) => {
-                self.handle_candidate_approval(new_id, client_auth, outbox);
+            Action::Add(entry_id, new_id, client_auth) => {
+                self.handle_candidate_approval(entry_id, new_id, client_auth, outbox);
             }
         }
     }

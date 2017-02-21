@@ -551,7 +551,8 @@ impl RouteManager {
     }
 
     // TODO: this should get from the log itself when that is up to date
-    fn get_current_members(&self, peer_mgr: &PeerManager) -> BTreeSet<PublicId> {
+    /// Get a list of current members (including `PublicId`s)
+    pub fn get_current_members(&self, peer_mgr: &PeerManager) -> BTreeSet<PublicId> {
         self.table
             .our_section()
             .iter()

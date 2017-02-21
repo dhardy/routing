@@ -656,6 +656,8 @@ pub enum MessageContent {
     ///
     /// Sent from Group Y to the joining node.
     NodeApproval {
+        /// Log entry identifier (just after this node addition)
+        log_id: LogId,
         /// The routing table shared by the nodes in our group, including the `PublicId`s of our
         /// contacts.
         sections: SectionMap,
@@ -816,7 +818,12 @@ impl Debug for MessageContent {
                        client_auth,
                        message_id)
             }
-            NodeApproval { ref sections } => write!(formatter, "NodeApproval {{ {:?} }}", sections),
+            NodeApproval { ref log_id, ref sections } => {
+                write!(formatter,
+                       "NodeApproval {{ log id {:?}, sections {:?} }}",
+                       log_id,
+                       sections)
+            }
             MemberLog(ref entry) => write!(formatter, "MemberLog {{ {:?} }}", entry),
         }
     }

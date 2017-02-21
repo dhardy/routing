@@ -235,6 +235,8 @@ impl MemberLog {
     /// us).
     pub fn relocate(&mut self, our_id: PublicId, log_id: LogId, members: BTreeSet<PublicId>) {
         if !self.log.is_empty() {
+            // Note: this currently happens routinely since new nodes are relocated _both_ when
+            // joining as a candidate and when being approved. This shouldn't happen later.
             warn!("Node({:?}) Reset to {:?} from non-empty log: {:?}", self.own_id.name(), our_id.name(), self);
         }
 
