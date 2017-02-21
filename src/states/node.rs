@@ -1830,8 +1830,8 @@ impl Node {
         self.send_routing_message(src, dst, request_content)
     }
 
-    // Context: we're a new node joining a section. This message should have been sent by each node
-    // in the target section.
+    // Context: we're a new node joining a section, and have been accepted as a candidate.
+    // This message should have been sent by each node in the target section.
     fn handle_get_node_name_response(&mut self,
                                      relocated_id: PublicId,
                                      record_id: RecordId,
@@ -1852,6 +1852,7 @@ impl Node {
         self.full_id.public_id_mut().set_name(*relocated_id.name());
         // TODO: can we move this to end of function instead of cloning members?
         self.route_mgr.relocate(*self.full_id.public_id(), record_id, members.clone());
+
         self.challenger_count = members.len();
         if let Some((_, proxy_public_id)) = self.peer_mgr.proxy() {
             if members.contains(proxy_public_id) {
@@ -2696,7 +2697,7 @@ impl Node {
         };
 
         if self.is_proper() && !force_via_proxy {
-            let targets: HashSet<_> = self.routing_table()
+            let targets: HashSet<_> = self.route_mgr
                 .targets(&routing_msg.dst, *exclude, route as usize)?
                 .into_iter()
                 .filter(|target| !sent_to.contains(target))

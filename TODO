@@ -1,0 +1,27 @@
+TODO:
+
+* means done
+# means current solution is ugly
+
+When a candidate is accepted:
+→ accumulation and close-group algorithms should exclude candidates*
+→ candidate should not send messages from its section
+→ all nodes should add it as a candidate*
+→ candidate should receive new records*#
+→ candidate must be careful what it does with any message
+→ candidate should accumulate pending records
+→ candidate should remove pending records when they are appended
+
+When a candidate times out, or a replacement candidate is accepted:
+→ remove from routing table on timeout OR new candidate
+
+When a candidate is approved as a full node:
+→ candidate may now send messages, including pending record entries
+→ add to routing table (in handle_candidate_approval)
+
+Investigate:
+→ support unknown candidates in the routing table
+→ remove_unapproved_candidates
+→ remove_expired_candidates
+→ why are multiple candidates allowed in route_mgr?
+→ why do we keep approved candidates in the list?

@@ -500,9 +500,7 @@ impl<T: Binary + Clone + Copy + Debug + Default + Hash + Xorable> RoutingTable<T
     /// Adds a contact to the routing table.
     ///
     /// Returns `Err` if `name` already existed in the routing table, or it doesn't fall within any
-    /// of our sections, or it's our own name.  Otherwise it returns `Ok(true)` if the addition
-    /// succeeded and should cause our section to split or `Ok(false)` if the addition succeeded and
-    /// shouldn't cause a split.
+    /// of our sections, or is our own name.
     pub fn add(&mut self, name: T) -> Result<(), Error> {
         if name == self.our_name {
             return Err(Error::OwnNameDisallowed);

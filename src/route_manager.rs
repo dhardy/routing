@@ -41,7 +41,7 @@ const NODE_CONNECT_TIMEOUT_SECS: u64 = 60;
 
 pub type SectionMap = BTreeMap<Prefix<XorName>, BTreeSet<PublicId>>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum CandidateState {
     VotedFor,
     AcceptedAsCandidate,
@@ -187,6 +187,7 @@ impl RouteManager {
             .entry(candidate_name)
             .or_insert_with(|| Candidate::new(client_auth))
             .state = CandidateState::AcceptedAsCandidate;
+
         let record_id = self.record.last_id().ok_or(SectionRecordError::InvalidState)?;
         let our_section = self.table.our_section();
         // TODO: we may need a new record entry here; we should get the section list from the
@@ -517,6 +518,32 @@ impl RouteManager {
         let needed_names = self.table.merge_other_section(merge_details);
         self.expected_peers.extend(needed_names.iter().map(|name| (*name, Instant::now())));
         section.into_iter().filter(|pub_id| needed_names.contains(pub_id.name())).collect()
+    }
+
+    // TODO: this is to make candidates get our record entries, but isn't very elegant!
+    /// Calls `RoutingTable::targets` and, if the destination is our section, includes candidates.
+    pub fn targets(&self,
+                   dst: &Authority<XorName>,
+                   exclude: XorName,
+                   route: usize)
+                   -> Result<BTreeSet<XorName>, RoutingTableError> {
+        match self.table.targets(dst, exclude, route) {
+            Ok(mut targets) => {
+                if let Authority::Section(ref target_name) = *dst {
+                    if self.table.our_prefix().matches(target_name) {
+                        for (name, _) in self.candidates
+                            .iter()
+                            .filter(|&(_, ref candidate)| {
+                                candidate.state == CandidateState::AcceptedAsCandidate
+                            }) {
+                            targets.insert(*name);
+                        }
+                    }
+                }
+                Ok(targets)
+            }
+            e @ Err(_) => e,
+        }
     }
 
     // Handle. If this is a valid new entry, return a reference to it (in the record).
