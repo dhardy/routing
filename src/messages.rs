@@ -587,8 +587,6 @@ pub enum MessageContent {
         log_id: LogId,
         /// Members of the section the node is now joining
         members: BTreeSet<PublicId>,
-        /// The message's unique identifier.
-        message_id: MessageId,
     },
     /// Sent to notify neighbours and own members when our section's member list changed (for now,
     /// only when new nodes join).
@@ -640,17 +638,6 @@ pub enum MessageContent {
         cacheable: bool,
         /// The `part_index`-th part of the serialised user message.
         payload: Vec<u8>,
-    },
-    /// Confirm with section that the candidate is about to resource prove.
-    ///
-    /// Sent from the `NaeManager` to the `NaeManager`.
-    AcceptAsCandidate {
-        /// Supplied `PublicId`, but with the new name
-        expect_id: PublicId,
-        /// Client authority of the candidate
-        client_auth: Authority<XorName>,
-        /// The message's unique identifier.
-        message_id: MessageId,
     },
     /// Approves the joining node as a routing node.
     ///
@@ -774,13 +761,12 @@ impl Debug for MessageContent {
                        info.pub_id,
                        info.msg_id)
             }
-            GetNodeNameResponse { ref relocated_id, ref log_id, ref members, ref message_id } => {
+            GetNodeNameResponse { ref relocated_id, ref log_id, ref members } => {
                 write!(formatter,
-                       "GetNodeNameResponse {{ {:?}, {:?}, {:?}, {:?} }}",
+                       "GetNodeNameResponse {{ {:?}, {:?}, {:?} }}",
                        relocated_id,
                        log_id,
-                       members,
-                       message_id)
+                       members)
             }
             SectionUpdate { ref prefix, ref members } => {
                 write!(formatter, "SectionUpdate {{ {:?}, {:?} }}", prefix, members)
@@ -810,13 +796,6 @@ impl Debug for MessageContent {
                        priority,
                        cacheable,
                        hash)
-            }
-            AcceptAsCandidate { ref expect_id, ref client_auth, ref message_id } => {
-                write!(formatter,
-                       "AcceptAsCandidate {{ {:?}, {:?}, {:?} }}",
-                       expect_id,
-                       client_auth,
-                       message_id)
             }
             NodeApproval { ref log_id, ref sections } => {
                 write!(formatter,

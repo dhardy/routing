@@ -820,7 +820,6 @@ impl Node {
                 OwnSectionMerge(..) |
                 OtherSectionMerge(..) |
                 ExpectCandidate { .. } |
-                AcceptAsCandidate { .. } |
                 ConnectionInfoRequest { .. } |
                 SectionUpdate { .. } |
                 RoutingTableRequest(..) |
@@ -867,9 +866,6 @@ impl Node {
             (ExpectCandidate { expect_id, client_auth, message_id }, Section(_), Section(_)) => {
                 self.handle_expect_candidate(expect_id, client_auth, message_id)
             }
-            (AcceptAsCandidate { expect_id, client_auth, message_id }, Section(_), Section(_)) => {
-                self.handle_accept_as_candidate(expect_id, client_auth, message_id)
-            }
             (ConnectionInfoRequest(conn_info), src @ Client { .. }, dst @ ManagedNode(_)) |
             (ConnectionInfoRequest(conn_info), src @ ManagedNode(_), dst @ ManagedNode(_)) => {
                 self.handle_connection_info_request(conn_info, src, dst, outbox)
@@ -902,7 +898,7 @@ impl Node {
             (OtherSectionMerge(section), PrefixSection(merge_prefix), PrefixSection(_)) => {
                 self.handle_other_section_merge(merge_prefix, section, outbox)
             }
-            (MemberLog(entry), Section(_), Section(_)) => Ok(self.handle_log_entry(entry, outbox)),
+            (MemberLog(entry), Section(_), Section(_)) => self.handle_log_entry(entry, outbox),
             (Ack(ack, _), _, _) => self.handle_ack_response(ack),
             (UserMessagePart { hash, part_count, part_index, payload, .. }, src, dst) => {
                 if let Some(msg) = self.user_msg_cache.add(hash, part_count, part_index, payload) {
@@ -1894,16 +1890,14 @@ impl Node {
             self.disconnect_peer(&peer_id);
         }
 
-        if candidate_id.signing_public_key() == self.full_id.public_id().signing_public_key() {
-            return Ok(()); // This is a delayed message belonging to our own node name request.
-        }
+        let original_name = *candidate_id.name();
+        candidate_id.set_name(self.routing_table().assign_to_min_len_prefix(&original_name));
 
         let original_name = *candidate_id.name();
         let relocated_name = self.next_node_name
             .take()
             .unwrap_or_else(|| self.routing_table().assign_to_min_len_prefix(&original_name));
         candidate_id.set_name(relocated_name);
-
         if self.routing_table().should_join_our_section(candidate_id.name()).is_err() {
             let request_content = MessageContent::ExpectCandidate {
                 expect_id: candidate_id,
@@ -1916,26 +1910,36 @@ impl Node {
         }
 
         self.route_mgr.expect_candidate(*candidate_id.name(), client_auth)?;
-        let response_content = MessageContent::AcceptAsCandidate {
-            expect_id: candidate_id,
-            client_auth: client_auth,
-            message_id: message_id,
+        let entry = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
+            Ok((prev_id, members)) => {
+                let change = MemberChange::AddCandidate {
+                    prev_id: prev_id,
+                    new_pub_id: candidate_id,
+                    client_auth: client_auth,
+                };
+                MemberEntry::new(members, change)
+            }
+            Err(e) => {
+                warn!("{:?} Failed to create MemberChange::AddCandidate: {:?}",
+                      self,
+                      e);
+                return Ok(());
+            }
         };
         info!("{:?} Expecting candidate {} via {:?}.",
               self,
               candidate_id.name(),
               client_auth);
 
-        let src = Authority::Section(*candidate_id.name());
-        self.send_routing_message(src, src, response_content)
+        self.send_log_entry_to_section(entry);
+        Ok(())
     }
 
     // Received by Y; From Y -> Y
     // Context: a node is joining our section. Sends the node our section.
     fn handle_accept_as_candidate(&mut self,
                                   candidate_id: PublicId,
-                                  client_auth: Authority<XorName>,
-                                  message_id: MessageId)
+                                  client_auth: Authority<XorName>)
                                   -> Result<(), RoutingError> {
         for peer_id in self.route_mgr.remove_expired_candidates(&self.peer_mgr) {
             self.disconnect_peer(&peer_id);
@@ -1949,13 +1953,19 @@ impl Node {
         self.candidate_timer_token = Some(self.timer
             .schedule(Duration::from_secs(RESOURCE_PROOF_DURATION_SECS)));
 
-        let (log_id, members) = self.route_mgr
-            .accept_as_candidate(&self.peer_mgr, *candidate_id.name(), client_auth)?;
-        let response_content = MessageContent::GetNodeNameResponse {
-            relocated_id: candidate_id,
-            log_id: log_id,
-            members: members,
-            message_id: message_id,
+        let response_content = match self.route_mgr
+            .accept_as_candidate(&self.peer_mgr, *candidate_id.name(), client_auth) {
+            Ok((log_id, members)) => {
+                MessageContent::GetNodeNameResponse {
+                    relocated_id: candidate_id,
+                    log_id: log_id,
+                    members: members,
+                }
+            }
+            Err(e) => {
+                error!("{:?} Unable to accept candidate: {:?}", self, e);
+                return Ok(());
+            }
         };
         info!("{:?} Our section with {:?} accepted {} as a candidate.",
               self,
@@ -2356,7 +2366,7 @@ impl Node {
             Ok((prev_id, members)) => {
                 let change = MemberChange::AddNode {
                     prev_id: prev_id,
-                    new_id: candidate_id,
+                    new_pub_id: candidate_id,
                     client_auth: client_auth,
                     sections: sections,
                 };
@@ -2416,23 +2426,30 @@ impl Node {
         }
     }
 
-    fn handle_log_entry(&mut self, entry: MemberEntry, outbox: &mut EventBox) {
+    fn handle_log_entry(&mut self,
+                        entry: MemberEntry,
+                        outbox: &mut EventBox)
+                        -> Result<(), RoutingError> {
         self.reset_log_entry_timer();
 
         enum Action {
             None,
             Split,
-            Add(LogId, PublicId, Authority<XorName>),
+            Candidate(PublicId, Authority<XorName>),
+            AddNode(LogId, PublicId, Authority<XorName>),
         }
 
         // We first match in PeerManager then match here too:
         let action = if let Some(entry) = self.route_mgr.handle_log_entry(entry) {
+            use self::MemberChange::*;
             match entry.change {
-                MemberChange::InitialNode(_) |
-                MemberChange::StartPoint(_) => Action::None,
-                MemberChange::SectionSplit { .. } => Action::Split,
-                MemberChange::AddNode { new_id, client_auth, .. } => {
-                    Action::Add(entry.id, new_id, client_auth)
+                InitialNode(_) | StartPoint(_) => Action::None,
+                SectionSplit { .. } => Action::Split,
+                AddCandidate { new_pub_id, client_auth, .. } => {
+                    Action::Candidate(new_pub_id, client_auth)
+                }
+                AddNode { new_pub_id, client_auth, .. } => {
+                    Action::AddNode(entry.id, new_pub_id, client_auth)
                 }
             }
         } else {
@@ -2440,26 +2457,36 @@ impl Node {
         };
         // Unfortunately the lifetime lock from `self.peer_mgr` means we can't inline this:
         match action {
-            Action::None => {}
+            Action::None => Ok(()),
             Action::Split => {
                 let our_prefix = *self.our_prefix();
                 self.handle_section_split(our_prefix, outbox);
+                Ok(())
             }
-            Action::Add(entry_id, new_id, client_auth) => {
+            Action::Candidate(expect_id, client_auth) => {
+                self.handle_accept_as_candidate(expect_id, client_auth)
+            }
+            Action::AddNode(entry_id, new_id, client_auth) => {
                 self.handle_candidate_approval(entry_id, new_id, client_auth, outbox);
+                Ok(())
             }
         }
     }
 
     /// Checks that an uncommitted entry is still applicable, and if so updates it.
     fn validate_and_update(&self, entry: MemberEntry) -> Option<MemberEntry> {
+        use self::MemberChange::*;
         let is_valid = match entry.change {
             // should never be accumulated:
-            MemberChange::InitialNode(_) |
-            MemberChange::StartPoint(_) => false,
-            MemberChange::SectionSplit { .. } => self.routing_table().we_should_split(),
-            MemberChange::AddNode { ref new_id, .. } => {
-                self.route_mgr.is_valid_candidate(&self.peer_mgr, new_id)
+            InitialNode(_) | StartPoint(_) => false,
+            SectionSplit { .. } => self.routing_table().we_should_split(),
+            AddCandidate { .. } => {
+                // TODO: when would we want to retry adding a candidate? For now, always reject
+                // if the log entry doesn't get appended first time.
+                false
+            }
+            AddNode { ref new_pub_id, .. } => {
+                self.route_mgr.is_valid_candidate(&self.peer_mgr, new_pub_id)
             }
         };
         if !is_valid {

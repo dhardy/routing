@@ -54,12 +54,23 @@ pub enum MemberChange {
     SectionSplit {
         prev_id: LogId,
     },
-    /// Record the approval of a candidate to become a full routing node.
-    AddNode {
+    /// Record addition of a candidate node. Once accepted as a candidate, it must complete
+    /// resource proofs to be accepted as a full node, otherwise it times out.
+    AddCandidate {
+        // TODO: some fields can probably be removed later, or may not need to be in the log at all
         prev_id: LogId,
-        new_id: PublicId,
-        // TODO: we don't really want these details in the log. Just adding now to simplify
-        // converting existing code.
+        new_pub_id: PublicId,
+        /// Client authority of the candidate
+        client_auth: Authority<XorName>,
+    },
+    /// Record the approval of a candidate to become a full routing node.
+    /// 
+    /// (The name may be a little confusing since the node was already added as a candidate. But
+    /// my preference, `ApproveCandidate`, sounds too much like the old `CandidateApproval`.)
+    AddNode {
+        // TODO: some fields can probably be removed later, or may not need to be in the log at all
+        prev_id: LogId,
+        new_pub_id: PublicId,
         /// Client authority of the candidate
         client_auth: Authority<XorName>,
         /// The `PublicId`s of all routing table contacts shared by the nodes in our section.
@@ -87,6 +98,7 @@ impl MemberChange {
             InitialNode(_) => 10000,
             StartPoint(_) => 9999,
             SectionSplit {..} => 2000,
+            AddCandidate {..} => 100,
             AddNode {..} => 1000,
         }
     }
@@ -97,6 +109,7 @@ impl MemberChange {
         match self {
             InitialNode(_) | StartPoint(_) => {}
             SectionSplit { ref mut prev_id } |
+            AddCandidate { ref mut prev_id, .. } |
             AddNode { ref mut prev_id, .. } => {
                 *prev_id = id
             }
@@ -178,8 +191,10 @@ impl MemberEntry {
             /*
             NodeLost { prev_hash, .. } |
             */
-            SectionSplit { prev_id, .. } | AddNode { prev_id, .. } => {
-                if prev_id != prev_entry.id {
+            SectionSplit { ref prev_id, .. } |
+            AddCandidate { ref prev_id, .. } |
+            AddNode { ref prev_id, .. } => {
+                if *prev_id != prev_entry.id {
                     return false;
                 }
             },
