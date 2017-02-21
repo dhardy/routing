@@ -18,12 +18,12 @@
 use crust::PeerId;
 use error::RoutingError;
 use id::PublicId;
-use member_log::{LogId, MemberEntry, MemberLog, MemberLogError};
 use peer_manager::PeerManager;
 use resource_proof::ResourceProof;
 use routing_table::{Authority, OtherMergeDetails, OwnMergeDetails, OwnMergeState, Prefix,
                     RemovalDetails, RoutingTable};
 use routing_table::Error as RoutingTableError;
+use section_record::{RecordEntry, RecordId, SectionRecord, SectionRecordError};
 use signature_accumulator::ACCUMULATION_TIMEOUT_SECS;
 use std::{fmt, mem};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -104,18 +104,18 @@ pub struct RouteManager {
     /// Peers we expect to connect to
     expected_peers: HashMap<XorName, Instant>,
     table: RoutingTable<XorName>,
-    // Log of routing table changes
-    pub log: MemberLog,
+    // Record of routing table changes
+    pub record: SectionRecord,
 }
 
 impl RouteManager {
     /// Returns a new route manager.
-    pub fn new(log: MemberLog, min_section_size: usize) -> RouteManager {
+    pub fn new(record: SectionRecord, min_section_size: usize) -> RouteManager {
         RouteManager {
             candidates: HashMap::new(),
             expected_peers: HashMap::new(),
-            table: RoutingTable::new(*log.own_id().name(), min_section_size),
-            log: log,
+            table: RoutingTable::new(*record.own_id().name(), min_section_size),
+            record: record,
         }
     }
 
@@ -133,12 +133,12 @@ impl RouteManager {
     /// Clears the routing table and resets this node's public ID.
     pub fn relocate(&mut self,
                     our_public_id: PublicId,
-                    log_start_point: LogId,
+                    record_start_point: RecordId,
                     section_members: BTreeSet<PublicId>) {
         let min_section_size = self.table.min_section_size();
         self.table = RoutingTable::new(*our_public_id.name(), min_section_size);
 
-        self.log.relocate(our_public_id, log_start_point, section_members)
+        self.record.relocate(our_public_id, record_start_point, section_members)
     }
 
     /// Returns the routing table.
@@ -175,23 +175,23 @@ impl RouteManager {
     /// Replaces any other potential candidate we have previously voted for.  Sets the candidate
     /// state to `AcceptedAsCandidate`.
     ///
-    /// Returns the identifier for the last log entry and the member list for our section at this
-    /// time.
+    /// Returns the identifier for the last record entry and the member list for our section at
+    /// this time.
     pub fn accept_as_candidate(&mut self,
                                peer_mgr: &PeerManager,
                                candidate_name: XorName,
                                client_auth: Authority<XorName>)
-                               -> Result<(LogId, BTreeSet<PublicId>), RoutingError> {
+                               -> Result<(RecordId, BTreeSet<PublicId>), RoutingError> {
         self.remove_unapproved_candidates(&candidate_name);
         self.candidates
             .entry(candidate_name)
             .or_insert_with(|| Candidate::new(client_auth))
             .state = CandidateState::AcceptedAsCandidate;
-        let log_id = self.log.last_id().ok_or(MemberLogError::InvalidState)?;
+        let record_id = self.record.last_id().ok_or(SectionRecordError::InvalidState)?;
         let our_section = self.table.our_section();
-        // TODO: we may need a new log entry here; we should get the section list from the log once
-        // it's the definitive source.)
-        Ok((log_id, peer_mgr.get_pub_ids(our_section, self.log.own_id()).into()))
+        // TODO: we may need a new record entry here; we should get the section list from the
+        // record once it's the definitive source.)
+        Ok((record_id, peer_mgr.get_pub_ids(our_section, self.record.own_id()).into()))
     }
 
     /// Verifies proof of resource.  If the response is not the current candidate, or if it fails
@@ -456,7 +456,7 @@ impl RouteManager {
                 .into_iter()
                 .map(|(prefix, members)| {
                     (prefix,
-                     peer_mgr.get_pub_ids(&members, self.log.own_id()).into_iter().collect())
+                     peer_mgr.get_pub_ids(&members, self.record.own_id()).into_iter().collect())
                 })
                 .collect();
             (merge_details.sender_prefix, merge_details.merge_prefix, sections)
@@ -519,9 +519,9 @@ impl RouteManager {
         section.into_iter().filter(|pub_id| needed_names.contains(pub_id.name())).collect()
     }
 
-    // Handle. If this is a valid new entry, return a reference to it (in the log).
-    pub fn handle_log_entry(&mut self, entry: MemberEntry) -> Option<&MemberEntry> {
-        self.log.append(entry)
+    // Handle. If this is a valid new entry, return a reference to it (in the record).
+    pub fn handle_record_entry(&mut self, entry: RecordEntry) -> Option<&RecordEntry> {
+        self.record.append(entry)
     }
 
     // Removes all candidates except those which are approved or have the given name
@@ -546,18 +546,18 @@ impl RouteManager {
         self.table
             .all_sections()
             .into_iter()
-            .map(|(prefix, names)| (prefix, peer_mgr.get_pub_ids(&names, self.log.own_id())))
+            .map(|(prefix, names)| (prefix, peer_mgr.get_pub_ids(&names, self.record.own_id())))
             .collect()
     }
 
-    // TODO: this should get from the log itself when that is up to date
+    // TODO: this should get from the record itself when that is up to date
     /// Get a list of current members (including `PublicId`s)
     pub fn get_current_members(&self, peer_mgr: &PeerManager) -> BTreeSet<PublicId> {
         self.table
             .our_section()
             .iter()
-            .filter_map(|name| if name == self.log.own_id().name() {
-                Some(*self.log.own_id())
+            .filter_map(|name| if name == self.record.own_id().name() {
+                Some(*self.record.own_id())
             } else if let Some(pub_id) = peer_mgr.get_pub_id(name) {
                 Some(*pub_id)
             } else {
@@ -567,11 +567,11 @@ impl RouteManager {
             .collect()
     }
 
-    /// Get previous log identifier and member list
+    /// Get previous record identifier and member list
     pub fn get_prev_id_and_members(&self,
                                    peer_mgr: &PeerManager)
-                                   -> Result<(LogId, BTreeSet<PublicId>), RoutingError> {
-        Ok((self.log.last_id().ok_or(MemberLogError::InvalidState)?,
+                                   -> Result<(RecordId, BTreeSet<PublicId>), RoutingError> {
+        Ok((self.record.last_id().ok_or(SectionRecordError::InvalidState)?,
             self.get_current_members(peer_mgr)))
     }
 

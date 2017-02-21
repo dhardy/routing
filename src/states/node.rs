@@ -28,7 +28,6 @@ use id::{FullId, PublicId};
 use itertools::Itertools;
 use log::LogLevel;
 use maidsafe_utilities::serialisation;
-use member_log::{LogId, MemberChange, MemberEntry, MemberLog};
 use messages::{ConnectionInfo, DEFAULT_PRIORITY, DirectMessage, HopMessage, MAX_PART_LEN, Message,
                MessageContent, RoutingMessage, SectionList, SignedMessage, UserMessage,
                UserMessageCache};
@@ -44,6 +43,7 @@ use routing_table::Error as RoutingTableError;
 use rust_sodium::crypto::{box_, sign};
 use rust_sodium::crypto::hash::sha256;
 use section_list_cache::SectionListCache;
+use section_record::{RecordEntry, RecordId, SectionChange, SectionRecord};
 use signature_accumulator::{ACCUMULATION_TIMEOUT_SECS, SignatureAccumulator};
 use state_machine::Transition;
 use states::common::MAX_ROUTES;
@@ -82,9 +82,9 @@ const APPROVAL_TIMEOUT_SECS: u64 = RESOURCE_PROOF_DURATION_SECS + ACCUMULATION_T
 const APPROVAL_PROGRESS_INTERVAL_SECS: u64 = 30;
 /// Interval between displaying info about current candidate, in seconds.
 const CANDIDATE_STATUS_INTERVAL_SECS: u64 = 60;
-/// Timeout on trying to accumulate a log entry. Must be longer than accumulation timeout times
+/// Timeout on trying to accumulate a record entry. Must be longer than accumulation timeout times
 /// number of routes.
-const LOG_ENTRY_TIMEOUT_SECS: u64 = ACCUMULATION_TIMEOUT_SECS * (MAX_ROUTES + 1) as u64;
+const RECORD_ENTRY_TIMEOUT_SECS: u64 = ACCUMULATION_TIMEOUT_SECS * (MAX_ROUTES + 1) as u64;
 
 pub struct Node {
     ack_mgr: AckManager,
@@ -132,10 +132,10 @@ pub struct Node {
     /// Whether our proxy is expected to be sending us a resource proof challenge (in which case it
     /// will be trivial) or not.
     proxy_is_resource_proof_challenger: bool,
-    /// Timer dictating when we can try sending another log entry
-    log_entry_timeout_token: Option<u64>,
-    /// Log entries we want to send but need to wait first
-    pending_log_entries: Vec<MemberEntry>,
+    /// Timer dictating when we can try sending another record entry
+    record_entry_timeout_token: Option<u64>,
+    /// Record entries we want to send but need to wait first
+    pending_record_entries: Vec<RecordEntry>,
 }
 
 impl Node {
@@ -148,14 +148,14 @@ impl Node {
         let name = XorName(sha256::hash(&full_id.public_id().name().0).0);
         full_id.public_id_mut().set_name(name);
         assert!(min_section_size >= MAX_ROUTES as usize);
-        let log = MemberLog::new_first(*full_id.public_id());
+        let record = SectionRecord::new_first(*full_id.public_id());
 
         let mut node = Self::new(cache,
                                  crust_service,
                                  true,
                                  full_id,
                                  min_section_size,
-                                 log,
+                                 record,
                                  Stats::new(),
                                  timer);
         if let Err(error) = node.crust_service.start_listening_tcp() {
@@ -179,13 +179,13 @@ impl Node {
                               timer: Timer)
                               -> Option<Self> {
         assert!(min_section_size >= MAX_ROUTES as usize);
-        let log = MemberLog::new_empty(*full_id.public_id());
+        let record = SectionRecord::new_empty(*full_id.public_id());
         let mut node = Self::new(cache,
                                  crust_service,
                                  false,
                                  full_id,
                                  min_section_size,
-                                 log,
+                                 record,
                                  stats,
                                  timer);
 
@@ -205,7 +205,7 @@ impl Node {
            first_node: bool,
            full_id: FullId,
            min_section_size: usize,
-           log: MemberLog,
+           record: SectionRecord,
            stats: Stats,
            mut timer: Timer)
            -> Self {
@@ -225,7 +225,7 @@ impl Node {
             is_approved: first_node,
             msg_queue: VecDeque::new(),
             peer_mgr: PeerManager::new(),
-            route_mgr: RouteManager::new(log, min_section_size),
+            route_mgr: RouteManager::new(record, min_section_size),
             response_cache: cache,
             routing_msg_filter: RoutingMessageFilter::new(),
             sig_accumulator: Default::default(),
@@ -245,8 +245,8 @@ impl Node {
             resource_proof_response_parts: HashMap::new(),
             challenger_count: 0,
             proxy_is_resource_proof_challenger: false,
-            log_entry_timeout_token: None,
-            pending_log_entries: vec![],
+            record_entry_timeout_token: None,
+            pending_record_entries: vec![],
         }
     }
 
@@ -312,7 +312,7 @@ impl Node {
 
     /// Public ID of this node.
     fn own_id(&self) -> &PublicId {
-        self.route_mgr.log.own_id()
+        self.route_mgr.record.own_id()
     }
 
     pub fn handle_action(&mut self, action: Action, outbox: &mut EventBox) -> Transition {
@@ -837,7 +837,7 @@ impl Node {
                 GetNodeNameResponse { .. } |
                 Ack(..) |
                 NodeApproval { .. } |
-                MemberLog(..) => {
+                SectionRecord(..) => {
                     // Handle like normal
                 }
             }
@@ -860,8 +860,9 @@ impl Node {
                                                   peer_id,
                                                   message_id)
             }
-            (GetNodeNameResponse { relocated_id, log_id, members, .. }, Section(_), dst) => {
-                Ok(self.handle_get_node_name_response(relocated_id, log_id, members, dst, outbox))
+            (GetNodeNameResponse { relocated_id, record_id, members, .. }, Section(_), dst) => {
+                Ok(self.handle_get_node_name_response(relocated_id, record_id, members, dst,
+                outbox))
             }
             (ExpectCandidate { expect_id, client_auth, message_id }, Section(_), Section(_)) => {
                 self.handle_expect_candidate(expect_id, client_auth, message_id)
@@ -874,8 +875,8 @@ impl Node {
             (ConnectionInfoResponse(conn_info), ManagedNode(src_name), dst @ ManagedNode(_)) => {
                 self.handle_connection_info_response(conn_info, src_name, dst)
             }
-            (NodeApproval { log_id, sections }, Section(_), Client { .. }) => {
-                self.handle_node_approval(log_id, sections, outbox)
+            (NodeApproval { record_id, sections }, Section(_), Client { .. }) => {
+                self.handle_node_approval(record_id, sections, outbox)
             }
             (SectionUpdate { prefix, members }, Section(_), PrefixSection(_)) => {
                 self.handle_section_update(prefix, members, outbox)
@@ -898,7 +899,9 @@ impl Node {
             (OtherSectionMerge(section), PrefixSection(merge_prefix), PrefixSection(_)) => {
                 self.handle_other_section_merge(merge_prefix, section, outbox)
             }
-            (MemberLog(entry), Section(_), Section(_)) => self.handle_log_entry(entry, outbox),
+            (SectionRecord(entry), Section(_), Section(_)) => {
+                self.handle_record_entry(entry, outbox)
+            }
             (Ack(ack, _), _, _) => self.handle_ack_response(ack),
             (UserMessagePart { hash, part_count, part_index, payload, .. }, src, dst) => {
                 if let Some(msg) = self.user_msg_cache.add(hash, part_count, part_index, payload) {
@@ -919,7 +922,7 @@ impl Node {
     }
 
     fn handle_candidate_approval(&mut self,
-                                 entry_id: LogId,
+                                 entry_id: RecordId,
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
                                  outbox: &mut EventBox) {
@@ -959,7 +962,7 @@ impl Node {
             // Send the _current_ routing table. If this doesn't accumulate, we expect the candidate
             // to disconnect from us.
             let content = MessageContent::NodeApproval {
-                log_id: entry_id,
+                record_id: entry_id,
                 sections: self.route_mgr.pub_ids_by_section(&self.peer_mgr),
             };
             if let Err(error) = self.send_routing_message(src, client_auth, content) {
@@ -976,7 +979,7 @@ impl Node {
     }
 
     fn handle_node_approval(&mut self,
-                            log_id: LogId,
+                            record_id: RecordId,
                             sections: SectionMap,
                             outbox: &mut EventBox)
                             -> Result<(), RoutingError> {
@@ -1026,10 +1029,10 @@ impl Node {
         }
 
         // TODO: getting members like this doesn't make much sense.
-        // TODO: we may want to get and append all log entries since relocating in
+        // TODO: we may want to get and append all record entries since relocating in
         // GetNodeNameResponse instead of relocating _again_ here.
         let members = self.route_mgr.get_current_members(&self.peer_mgr);
-        self.route_mgr.relocate(*self.full_id.public_id(), log_id, members);
+        self.route_mgr.relocate(*self.full_id.public_id(), record_id, members);
 
         info!("{:?} Resource proof challenges completed. This node has been approved to join the \
                network!",
@@ -1412,9 +1415,9 @@ impl Node {
         if self.our_prefix().matches(public_id.name()) && self.routing_table().we_should_split() {
             match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
                 Ok((prev_id, members)) => {
-                    let change = MemberChange::SectionSplit { prev_id: prev_id };
-                    let entry = MemberEntry::new(members, change);
-                    self.send_log_entry_to_section(entry);
+                    let change = SectionChange::SectionSplit { prev_id: prev_id };
+                    let entry = RecordEntry::new(members, change);
+                    self.send_record_entry_to_section(entry);
                 }
                 Err(e) => {
                     error!("{:?} Failed to make split entry: {:?}", self, e);
@@ -1831,7 +1834,7 @@ impl Node {
     // in the target section.
     fn handle_get_node_name_response(&mut self,
                                      relocated_id: PublicId,
-                                     log_id: LogId,
+                                     record_id: RecordId,
                                      members: BTreeSet<PublicId>,
                                      dst: Authority<XorName>,
                                      outbox: &mut EventBox) {
@@ -1848,7 +1851,7 @@ impl Node {
 
         self.full_id.public_id_mut().set_name(*relocated_id.name());
         // TODO: can we move this to end of function instead of cloning members?
-        self.route_mgr.relocate(*self.full_id.public_id(), log_id, members.clone());
+        self.route_mgr.relocate(*self.full_id.public_id(), record_id, members.clone());
         self.challenger_count = members.len();
         if let Some((_, proxy_public_id)) = self.peer_mgr.proxy() {
             if members.contains(proxy_public_id) {
@@ -1912,15 +1915,15 @@ impl Node {
         self.route_mgr.expect_candidate(*candidate_id.name(), client_auth)?;
         let entry = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
             Ok((prev_id, members)) => {
-                let change = MemberChange::AddCandidate {
+                let change = SectionChange::AddCandidate {
                     prev_id: prev_id,
                     new_pub_id: candidate_id,
                     client_auth: client_auth,
                 };
-                MemberEntry::new(members, change)
+                RecordEntry::new(members, change)
             }
             Err(e) => {
-                warn!("{:?} Failed to create MemberChange::AddCandidate: {:?}",
+                warn!("{:?} Failed to create SectionChange::AddCandidate: {:?}",
                       self,
                       e);
                 return Ok(());
@@ -1931,7 +1934,7 @@ impl Node {
               candidate_id.name(),
               client_auth);
 
-        self.send_log_entry_to_section(entry);
+        self.send_record_entry_to_section(entry);
         Ok(())
     }
 
@@ -1955,10 +1958,10 @@ impl Node {
 
         let response_content = match self.route_mgr
             .accept_as_candidate(&self.peer_mgr, *candidate_id.name(), client_auth) {
-            Ok((log_id, members)) => {
+            Ok((record_id, members)) => {
                 MessageContent::GetNodeNameResponse {
                     relocated_id: candidate_id,
-                    log_id: log_id,
+                    record_id: record_id,
                     members: members,
                 }
             }
@@ -2281,8 +2284,8 @@ impl Node {
                   self.resource_proof_response_progress(),
                   remaining_duration,
                   APPROVAL_TIMEOUT_SECS);
-        } else if self.log_entry_timeout_token == Some(token) {
-            self.reset_log_entry_timer();
+        } else if self.record_entry_timeout_token == Some(token) {
+            self.reset_record_entry_timer();
         } else {
             self.resend_unacknowledged_timed_out_msgs(token);
         }
@@ -2364,20 +2367,22 @@ impl Node {
         let src = Authority::Section(*candidate_id.name());
         let entry = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
             Ok((prev_id, members)) => {
-                let change = MemberChange::AddNode {
+                let change = SectionChange::AddNode {
                     prev_id: prev_id,
                     new_pub_id: candidate_id,
                     client_auth: client_auth,
                     sections: sections,
                 };
-                MemberEntry::new(members, change)
+                RecordEntry::new(members, change)
             }
             Err(e) => {
-                warn!("{:?} Failed to create MemberChange::AddNode: {:?}", self, e);
+                warn!("{:?} Failed to create SectionChange::AddNode: {:?}",
+                      self,
+                      e);
                 return Ok(());
             }
         };
-        let response_content = MessageContent::MemberLog(entry);
+        let response_content = MessageContent::SectionRecord(entry);
         info!("{:?} Resource proof duration has finished. Voting to approve candidate {}.",
               self,
               candidate_id.name());
@@ -2414,34 +2419,34 @@ impl Node {
         self.rt_timer_token = Some(self.timer.schedule(self.rt_timeout));
     }
 
-    fn reset_log_entry_timer(&mut self) {
-        self.log_entry_timeout_token = None;
-        self.pending_log_entries.sort(); // sorts, with highest priority last
-        while let Some(entry) = self.pending_log_entries.pop() {
+    fn reset_record_entry_timer(&mut self) {
+        self.record_entry_timeout_token = None;
+        self.pending_record_entries.sort(); // sorts, with highest priority last
+        while let Some(entry) = self.pending_record_entries.pop() {
             if let Some(new_entry) = self.validate_and_update(entry) {
-                self.send_log_entry_to_section(new_entry);
+                self.send_record_entry_to_section(new_entry);
                 break;
             }
             // else: drop entry and check for another
         }
     }
 
-    fn handle_log_entry(&mut self,
-                        entry: MemberEntry,
-                        outbox: &mut EventBox)
-                        -> Result<(), RoutingError> {
-        self.reset_log_entry_timer();
+    fn handle_record_entry(&mut self,
+                           entry: RecordEntry,
+                           outbox: &mut EventBox)
+                           -> Result<(), RoutingError> {
+        self.reset_record_entry_timer();
 
         enum Action {
             None,
             Split,
             Candidate(PublicId, Authority<XorName>),
-            AddNode(LogId, PublicId, Authority<XorName>),
+            AddNode(RecordId, PublicId, Authority<XorName>),
         }
 
         // We first match in PeerManager then match here too:
-        let action = if let Some(entry) = self.route_mgr.handle_log_entry(entry) {
-            use self::MemberChange::*;
+        let action = if let Some(entry) = self.route_mgr.handle_record_entry(entry) {
+            use self::SectionChange::*;
             match entry.change {
                 InitialNode(_) | StartPoint(_) => Action::None,
                 SectionSplit { .. } => Action::Split,
@@ -2474,15 +2479,15 @@ impl Node {
     }
 
     /// Checks that an uncommitted entry is still applicable, and if so updates it.
-    fn validate_and_update(&self, entry: MemberEntry) -> Option<MemberEntry> {
-        use self::MemberChange::*;
+    fn validate_and_update(&self, entry: RecordEntry) -> Option<RecordEntry> {
+        use self::SectionChange::*;
         let is_valid = match entry.change {
             // should never be accumulated:
             InitialNode(_) | StartPoint(_) => false,
             SectionSplit { .. } => self.routing_table().we_should_split(),
             AddCandidate { .. } => {
                 // TODO: when would we want to retry adding a candidate? For now, always reject
-                // if the log entry doesn't get appended first time.
+                // if the record entry doesn't get appended first time.
                 false
             }
             AddNode { ref new_pub_id, .. } => {
@@ -2496,10 +2501,10 @@ impl Node {
         match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
             Ok((prev_id, members)) => {
                 let change = entry.change.update_prev(prev_id);
-                Some(MemberEntry::new(members, change))
+                Some(RecordEntry::new(members, change))
             }
             Err(e) => {
-                warn!("{:?} Unable to get log details: {:?}", self, e);
+                warn!("{:?} Unable to get record details: {:?}", self, e);
                 None
             }
         }
@@ -2521,20 +2526,20 @@ impl Node {
 
     // src: always ourself
     // dst: always our section
-    fn send_log_entry_to_section(&mut self, entry: MemberEntry) {
-        debug!("{:?} Attempting to agree log entry: {:?}", self, entry);
-        if self.log_entry_timeout_token.is_none() {
-            self.log_entry_timeout_token = Some(self.timer
-                .schedule(Duration::from_secs(LOG_ENTRY_TIMEOUT_SECS)));
-            // Log entry agreement: we send a routing message from our section to itself, and rely
-            // on accumulation for agreement (with adjusted rules about when we can send).
+    fn send_record_entry_to_section(&mut self, entry: RecordEntry) {
+        debug!("{:?} Attempting to agree record entry: {:?}", self, entry);
+        if self.record_entry_timeout_token.is_none() {
+            self.record_entry_timeout_token = Some(self.timer
+                .schedule(Duration::from_secs(RECORD_ENTRY_TIMEOUT_SECS)));
+            // Record entry agreement: we send a routing message from our section to itself, and
+            // rely on accumulation for agreement (with adjusted rules about when we can send).
             let src = Authority::Section(*self.name());
-            let content = MessageContent::MemberLog(entry);
+            let content = MessageContent::SectionRecord(entry);
             if let Err(e) = self.send_routing_message(src, src, content) {
-                warn!("{:?} Failed sending MemberLog: {:?}", self, e);
+                warn!("{:?} Failed sending SectionRecord: {:?}", self, e);
             }
         } else {
-            self.pending_log_entries.push(entry);
+            self.pending_record_entries.push(entry);
         }
     }
 

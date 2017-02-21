@@ -26,7 +26,6 @@ use itertools::Itertools;
 use lru_time_cache::LruCache;
 use maidsafe_utilities;
 use maidsafe_utilities::serialisation::{deserialise, serialise};
-use member_log::{LogId, MemberEntry};
 #[cfg(feature = "use-mock-crust")]
 use mock_crust::crust::PeerId;
 use route_manager::SectionMap;
@@ -34,6 +33,7 @@ use routing_table::{Prefix, Xorable};
 use routing_table::Authority;
 use rust_sodium::crypto::{box_, sign};
 use rust_sodium::crypto::hash::sha256;
+use section_record::{RecordEntry, RecordId};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Debug, Formatter};
 use std::iter;
@@ -583,8 +583,8 @@ pub enum MessageContent {
     GetNodeNameResponse {
         /// Supplied `PublicId`, but with the new name
         relocated_id: PublicId,
-        /// Log entry identifier (just after this node addition)
-        log_id: LogId,
+        /// Record entry identifier (just after this node addition)
+        record_id: RecordId,
         /// Members of the section the node is now joining
         members: BTreeSet<PublicId>,
     },
@@ -643,14 +643,14 @@ pub enum MessageContent {
     ///
     /// Sent from Group Y to the joining node.
     NodeApproval {
-        /// Log entry identifier (just after this node addition)
-        log_id: LogId,
+        /// Record entry identifier (just after this node addition)
+        record_id: RecordId,
         /// The routing table shared by the nodes in our group, including the `PublicId`s of our
         /// contacts.
         sections: SectionMap,
     },
-    /// A log entry
-    MemberLog(MemberEntry),
+    /// A record entry
+    SectionRecord(RecordEntry),
 }
 
 impl MessageContent {
@@ -761,11 +761,11 @@ impl Debug for MessageContent {
                        info.pub_id,
                        info.msg_id)
             }
-            GetNodeNameResponse { ref relocated_id, ref log_id, ref members } => {
+            GetNodeNameResponse { ref relocated_id, ref record_id, ref members } => {
                 write!(formatter,
                        "GetNodeNameResponse {{ {:?}, {:?}, {:?} }}",
                        relocated_id,
-                       log_id,
+                       record_id,
                        members)
             }
             SectionUpdate { ref prefix, ref members } => {
@@ -797,13 +797,13 @@ impl Debug for MessageContent {
                        cacheable,
                        hash)
             }
-            NodeApproval { ref log_id, ref sections } => {
+            NodeApproval { ref record_id, ref sections } => {
                 write!(formatter,
-                       "NodeApproval {{ log id {:?}, sections {:?} }}",
-                       log_id,
+                       "NodeApproval {{ record id {:?}, sections {:?} }}",
+                       record_id,
                        sections)
             }
-            MemberLog(ref entry) => write!(formatter, "MemberLog {{ {:?} }}", entry),
+            SectionRecord(ref entry) => write!(formatter, "SectionRecord {{ {:?} }}", entry),
         }
     }
 }

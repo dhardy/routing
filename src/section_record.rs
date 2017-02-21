@@ -27,14 +27,14 @@ use std::cmp::Ordering;
 use routing_table::Authority;
 use route_manager::SectionMap;
 
-/// We use this to identify log entries.
+/// We use this to identify record entries.
 //TODO: why are we using SHA256?
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
-pub struct LogId {
+pub struct RecordId {
     digest: sha256::Digest,
 }
 
-impl fmt::Debug for LogId {
+impl fmt::Debug for RecordId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let bytes = self.digest.as_ref();
         write!(f, "{:02x}{:02x}{:02x}..", bytes[0], bytes[1], bytes[2])
@@ -43,22 +43,22 @@ impl fmt::Debug for LogId {
 
 /// What happened in a change
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, Eq, PartialEq, Hash)]
-pub enum MemberChange {
+pub enum SectionChange {
     /// The node starting a network
     InitialNode(XorName),
-    /// Used for logs which don't go back to the `InitialNode`.
+    /// Used for records which don't go back to the `InitialNode`.
     ///
     /// Like `InitialNode`, this is not a successor to anything.
-    StartPoint(LogId),
+    StartPoint(RecordId),
     /// Indicates an agreement to split. This is the last entry before split.
     SectionSplit {
-        prev_id: LogId,
+        prev_id: RecordId,
     },
     /// Record addition of a candidate node. Once accepted as a candidate, it must complete
     /// resource proofs to be accepted as a full node, otherwise it times out.
     AddCandidate {
-        // TODO: some fields can probably be removed later, or may not need to be in the log at all
-        prev_id: LogId,
+        // TODO: some fields can probably be removed later, or may not need to be in the record
+        prev_id: RecordId,
         new_pub_id: PublicId,
         /// Client authority of the candidate
         client_auth: Authority<XorName>,
@@ -68,8 +68,8 @@ pub enum MemberChange {
     /// (The name may be a little confusing since the node was already added as a candidate. But
     /// my preference, `ApproveCandidate`, sounds too much like the old `CandidateApproval`.)
     AddNode {
-        // TODO: some fields can probably be removed later, or may not need to be in the log at all
-        prev_id: LogId,
+        // TODO: some fields can probably be removed later, or may not need to be in the record
+        prev_id: RecordId,
         new_pub_id: PublicId,
         /// Client authority of the candidate
         client_auth: Authority<XorName>,
@@ -78,22 +78,22 @@ pub enum MemberChange {
     },
     /*
     NodeLost {
-        prev_hash: LogId,
+        prev_hash: RecordId,
         lost_name: XorName,
     },
     SectionMerge {
         /// Hash of previous block for lexicographically lesser section (P0).
-        left_hash: LogId,
+        left_hash: RecordId,
         /// Hash of previous block for lexicographically greater section (P1).
-        right_hash: LogId,
+        right_hash: RecordId,
     },
     */
 }
 
-impl MemberChange {
+impl SectionChange {
     // higher value is higher priority, equal only if types are equal
     fn priority(&self) -> u32 {
-        use self::MemberChange::*;
+        use self::SectionChange::*;
         match *self {
             InitialNode(_) => 10000,
             StartPoint(_) => 9999,
@@ -104,8 +104,8 @@ impl MemberChange {
     }
     
     /// Update the previous entry identifier, if applicable.
-    pub fn update_prev(mut self, id: LogId) -> Self {
-        use self::MemberChange::*;
+    pub fn update_prev(mut self, id: RecordId) -> Self {
+        use self::SectionChange::*;
         match self {
             InitialNode(_) | StartPoint(_) => {}
             SectionSplit { ref mut prev_id } |
@@ -119,22 +119,22 @@ impl MemberChange {
 }
 
 /// Entry recording a membership change
-// TODO: maybe delete this entirely in favour of just using MemberChange, the id is computable
+// TODO: maybe delete this entirely in favour of just using SectionChange, the id is computable
 // from the change field (and doesn't need to be stored).
 // TODO: should fields be pub?
 #[derive(Clone, RustcEncodable, RustcDecodable, Eq, PartialEq, Hash)]
-pub struct MemberEntry {
+pub struct RecordEntry {
     // Identifier of this change, applied over the previous change
-    pub id: LogId,
+    pub id: RecordId,
     // List of members before applying this change, sorted by name.
     // TODO: do we want to only store diffs to member list instead?
     pub members: BTreeSet<PublicId>,
     // Change itself
-    pub change: MemberChange,
+    pub change: SectionChange,
 }
 
-impl Ord for MemberEntry {
-    fn cmp(&self, other: &MemberEntry) -> Ordering {
+impl Ord for RecordEntry {
+    fn cmp(&self, other: &RecordEntry) -> Ordering {
         match (self.change.priority(), other.change.priority()) {
             // If same type, any consistent ordering is sufficient
             (x, y) if x == y => self.id.cmp(&other.id),
@@ -144,19 +144,19 @@ impl Ord for MemberEntry {
     }
 }
 
-impl PartialOrd for MemberEntry {
-    fn partial_cmp(&self, other: &MemberEntry) -> Option<Ordering> {
+impl PartialOrd for RecordEntry {
+    fn partial_cmp(&self, other: &RecordEntry) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 
-impl MemberEntry {
+impl RecordEntry {
     /// Create a new entry, given the members of the section before a change, and the change itself.
     ///
     /// The list of members is sorted in this method.
-    pub fn new(members: BTreeSet<PublicId>, change: MemberChange) -> Self {
-        let id = if let MemberChange::StartPoint(id) = change {
+    pub fn new(members: BTreeSet<PublicId>, change: SectionChange) -> Self {
+        let id = if let SectionChange::StartPoint(id) = change {
             //TODO: this is a hack; maybe there's a better solution?
             id
         } else {
@@ -167,10 +167,10 @@ impl MemberEntry {
             // Find a way of handling this; ideally don't return a `Result` everywhere.
             buf.extend_from_slice(&unwrap!(serialise(&members)));
             buf.extend_from_slice(&unwrap!(serialise(&change)));
-            LogId { digest: sha256::hash(&buf) }
+            RecordId { digest: sha256::hash(&buf) }
         };
 
-        MemberEntry {
+        RecordEntry {
             id: id,
             members: members,
             change: change,
@@ -179,13 +179,13 @@ impl MemberEntry {
 
     // TODO: maybe return a Result<(), SomeError>
     /// Checks that (one of) our own "previous entry identifiers" is `prev_entry`.
-    pub fn is_successor_of(&self, prev_entry: &MemberEntry) -> bool {
-        use self::MemberChange::*;
+    pub fn is_successor_of(&self, prev_entry: &RecordEntry) -> bool {
+        use self::SectionChange::*;
 
         // Check hash.
         match self.change {
             InitialNode(..) | StartPoint(..) => {
-                warn!("{:?} MemberEntry::is_successor_of called on initial entry", self);
+                warn!("{:?} RecordEntry::is_successor_of called on initial entry", self);
                 return false;
             }
             /*
@@ -213,71 +213,71 @@ impl MemberEntry {
     }
 }
 
-impl fmt::Debug for MemberEntry {
+impl fmt::Debug for RecordEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "MemberEntry {{ id: {:?}, members: {:?}, change: {:?}", &self.id, &self.members, &self.change)
+        write!(f, "RecordEntry {{ id: {:?}, members: {:?}, change: {:?}", &self.id, &self.members, &self.change)
     }
 }
 
 
-/// Log of section membership changes
+/// Record of section membership changes
 #[derive(Clone)]
-pub struct MemberLog {
+pub struct SectionRecord {
     own_id: PublicId,
-    log: Vec<MemberEntry>,
+    entries: Vec<RecordEntry>,
 }
 
-impl MemberLog {
-    /// Create a new log as the first node (i.e. state in the log that this is the initial node in
+impl SectionRecord {
+    /// Create a new record as the first node (i.e. state that this is the initial node in
     /// the network).
     pub fn new_first(our_id: PublicId) -> Self {
-        let change = MemberChange::InitialNode(*our_id.name());
-        let entry = MemberEntry::new(BTreeSet::new(), change);
-        MemberLog { log: vec![entry], own_id: our_id }
+        let change = SectionChange::InitialNode(*our_id.name());
+        let entry = RecordEntry::new(BTreeSet::new(), change);
+        SectionRecord { entries: vec![entry], own_id: our_id }
     }
 
-    /// Create a new, empty log.
+    /// Create a new, empty record.
     ///
-    /// The log is invalid until an entry has been inserted.
+    /// The record is invalid until an entry has been inserted.
     pub fn new_empty(our_id: PublicId) -> Self {
-        MemberLog { log: vec![], own_id: our_id }
+        SectionRecord { entries: vec![], own_id: our_id }
     }
 
-    /// Node has relocated: reset the log and change our id.
+    /// Node has relocated: reset the record and change our id.
     /// 
-    /// The log is cleared and given a new "start point" where `log_id` is the starting point in
-    /// our neighbour's log, and `members` is  the list of members in our section (after adding
+    /// The record is cleared and given a new "start point" where `record_id` is the starting point in
+    /// our neighbour's record, and `members` is  the list of members in our section (after adding
     /// us).
-    pub fn relocate(&mut self, our_id: PublicId, log_id: LogId, members: BTreeSet<PublicId>) {
-        if !self.log.is_empty() {
+    pub fn relocate(&mut self, our_id: PublicId, record_id: RecordId, members: BTreeSet<PublicId>) {
+        if !self.entries.is_empty() {
             // Note: this currently happens routinely since new nodes are relocated _both_ when
             // joining as a candidate and when being approved. This shouldn't happen later.
-            warn!("Node({:?}) Reset to {:?} from non-empty log: {:?}", self.own_id.name(), our_id.name(), self);
+            warn!("Node({:?}) Reset to {:?} from non-empty record: {:?}", self.own_id.name(), our_id.name(), self);
         }
 
         self.own_id = our_id;
-        let change = MemberChange::StartPoint(log_id);
-        let entry = MemberEntry::new(members, change);
-        self.log = vec![entry];
+        let change = SectionChange::StartPoint(record_id);
+        let entry = RecordEntry::new(members, change);
+        self.entries = vec![entry];
     }
 
-    /// Try to append an entry to the log
-    pub fn append(&mut self, entry: MemberEntry) -> Option<&MemberEntry> {
-        if let Some(prev) = self.log.last() {
+    /// Try to append an entry to the record
+    pub fn append(&mut self, entry: RecordEntry) -> Option<&RecordEntry> {
+        if let Some(prev) = self.entries.last() {
             if !entry.is_successor_of(prev) {
                 // This is an error in our collective-agreement algorithm:
-                // TODO: if we have a problem here, we should try to re-sync the log
-                error!("Node({:?}) Attempted to append an invalid successor to log (may not be recoverable); log: {:?}", self.own_id.name(), self);
+                // TODO: if we have a problem here, we should try to re-sync the record
+                error!("Node({:?}) Attempted to append an invalid successor to record (may not be recoverable); record: {:?}", self.own_id.name(), self);
                 return None;
             }
         } else {
             // This is a fatal code error, and probably going to happen again if rebooted.
-            panic!("Node({:?}) Attempted to append to log before initialisation.", self.own_id.name());
+            panic!("Node({:?}) Attempted to append to record before initialisation.", self.own_id.name());
         }
 
-        info!("Node({:?}) Appending log entry: {:?}", self.own_id.name(), entry);
-        self.log.push(entry);
-        self.log.last()
+        info!("Node({:?}) Appending record entry: {:?}", self.own_id.name(), entry);
+        self.entries.push(entry);
+        self.entries.last()
     }
 
     /// Get our public identifier
@@ -285,32 +285,32 @@ impl MemberLog {
         &self.own_id
     }
     
-    /// Return the last identifier in the log, or none if the log is entry.
+    /// Return the last identifier in the record, or none if the record is entry.
     // TODO: I don't think we'll want this eventually. At least, check usages.
-    pub fn last_id(&self) -> Option<LogId> {
-        self.log.last().map(|entry| entry.id)
+    pub fn last_id(&self) -> Option<RecordId> {
+        self.entries.last().map(|entry| entry.id)
     }
 }
 
-impl fmt::Debug for MemberLog {
+impl fmt::Debug for SectionRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Member log of {:?}:", self.own_id)?;
-        if self.log.len() <= 3 {
-            write!(f, "\tLog: {:?}", self.log)
+        write!(f, "Section record of {:?}:", self.own_id)?;
+        if self.entries.len() <= 3 {
+            write!(f, "\tRecord: {:?}", self.entries)
         } else {
-            let ll = self.log.len();
+            let ll = self.entries.len();
             write!(f,
-                    "\tLog: [{:?}, <omitted {} entries>, {:?}, {:?}]",
-                   self.log[0],
+                    "\tRecord: [{:?}, <omitted {} entries>, {:?}, {:?}]",
+                   self.entries[0],
                    ll - 3,
-                   self.log[ll - 2],
-                   self.log[ll - 1])
+                   self.entries[ll - 2],
+                   self.entries[ll - 1])
         }
     }
 }
 
 #[derive(Debug)]
-pub enum MemberLogError {
+pub enum SectionRecordError {
     InvalidState,
     PrevIdMismatch,
 }
