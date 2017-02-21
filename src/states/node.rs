@@ -796,14 +796,22 @@ impl Node {
                 ConnectionInfoRequest { .. } |
                 SectionUpdate { .. } |
                 RoutingTableRequest(..) |
-                RoutingTableResponse { .. } => {
+                RoutingTableResponse { .. } |
+                UserMessagePart { .. } => {
+                    // These messages should not be handled before node approval
                     trace!("{:?} Not approved yet. Delaying message handling: {:?}",
                            self,
                            routing_msg);
                     self.routing_msg_backlog.push(routing_msg);
                     return Ok(());
                 }
-                _ => (),
+                GetNodeName { .. } |
+                ConnectionInfoResponse { .. } |
+                GetNodeNameResponse { .. } |
+                Ack(..) |
+                NodeApproval { .. } => {
+                    // Handle like normal
+                }
             }
         }
 
