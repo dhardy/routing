@@ -8,7 +8,7 @@ When a candidate is accepted:
 → candidate should not send messages from its section
 → all nodes should add it as a candidate*
 → candidate should receive new records*#
-→ candidate must be careful what it does with any message
+→ candidate must be careful what it does when receiving a message*
 → candidate should accumulate pending records
 → candidate should remove pending records when they are appended
 

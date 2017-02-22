@@ -926,6 +926,11 @@ impl Node {
                                  candidate_id: PublicId,
                                  client_auth: Authority<XorName>,
                                  outbox: &mut EventBox) {
+        if !self.is_approved {
+            // TODO: set approval here, instead of via NodeApproval msg
+            return;
+        }
+
         for peer_id in self.route_mgr.remove_expired_candidates(&self.peer_mgr) {
             self.disconnect_peer(&peer_id);
         }
@@ -1848,6 +1853,7 @@ impl Node {
         self.get_approval_timer_token = Some(self.timer.schedule(duration));
         self.approval_progress_timer_token = Some(self.timer
             .schedule(Duration::from_secs(APPROVAL_PROGRESS_INTERVAL_SECS)));
+        self.is_approved = false;
 
         self.full_id.public_id_mut().set_name(*relocated_id.name());
         // TODO: can we move this to end of function instead of cloning members?
@@ -1949,8 +1955,8 @@ impl Node {
             self.disconnect_peer(&peer_id);
         }
 
-        if candidate_id == *self.full_id.public_id() {
-            // If we're the joining node: stop
+        if !self.is_approved {
+            // If we're a candidate, stop
             return Ok(());
         }
 
@@ -2039,6 +2045,10 @@ impl Node {
                      src: Authority<XorName>,
                      dst: Authority<XorName>)
                      -> Result<(), RoutingError> {
+        if !self.is_approved {
+            return Ok(());
+        }
+
         let sections = self.route_mgr.pub_ids_by_section(&self.peer_mgr);
         let prefixes = self.routing_table().prefixes();
         let serialised_rt = serialisation::serialise(&(&sections, prefixes))?;
@@ -2122,6 +2132,13 @@ impl Node {
               self,
               prefix,
               self.routing_table().prefixes());
+
+        // None of the below needs to happen for candidates:
+        // TODO: if a merge is needed and we notice this as a candidate, we should check again
+        // when becoming a full routing node.
+        if !self.is_approved {
+            return;
+        }
 
         self.merge_if_necessary();
 
