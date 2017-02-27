@@ -475,8 +475,7 @@ impl Node {
     }
 
     fn find_tunnel_for_peer(&mut self, peer_id: PeerId, pub_id: &PublicId) {
-        let close_names = self.routing_table().other_close_names(pub_id.name()).unwrap_or_default();
-        let close_peers = self.peer_mgr.set_searching_for_tunnel(peer_id, *pub_id, close_names);
+        let close_peers = self.peer_mgr.set_searching_for_tunnel(peer_id, *pub_id);
         for (name, dst_peer_id) in close_peers {
             trace!("{:?} Asking {:?} to serve as a tunnel for {:?}.",
                    self,

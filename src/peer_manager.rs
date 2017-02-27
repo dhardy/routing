@@ -15,6 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
+use Xorable;
 use crust::{PeerId, PrivConnectionInfo, PubConnectionInfo};
 use error::RoutingError;
 use id::PublicId;
@@ -25,7 +26,7 @@ use rust_sodium::crypto::hash::sha256;
 use rust_sodium::crypto::sign;
 use std::{error, fmt};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::collections::hash_map::Values;
+use std::collections::hash_map;
 use std::time::{Duration, Instant};
 use types::MessageId;
 use xor_name::XorName;
@@ -36,6 +37,8 @@ const JOINING_NODE_TIMEOUT_SECS: u64 = 900;
 const CONNECTION_TIMEOUT_SECS: u64 = 90;
 /// Time (in seconds) the node waits for a `NodeIdentify` message.
 const NODE_IDENTIFY_TIMEOUT_SECS: u64 = 60;
+/// Number of close nodes we try to use to establish a tunnel
+const NUM_TUNNEL_VIA_NODES: usize = 10;
 
 #[derive(Debug)]
 /// Errors that occur in peer status management.
@@ -264,8 +267,13 @@ impl PeerMap {
         self.peers.get(name)
     }
 
+    // Iterator over peer names
+    fn peer_names(&self) -> hash_map::Keys<XorName, Peer> {
+        self.peers.keys()
+    }
+
     // Iterator over all peers in the map.
-    fn peers(&self) -> Values<XorName, Peer> {
+    fn peers(&self) -> hash_map::Values<XorName, Peer> {
         self.peers.values()
     }
 
@@ -673,8 +681,7 @@ impl PeerManager {
     /// Returns empty vector of candidates if it is already in Routing state.
     pub fn set_searching_for_tunnel(&mut self,
                                     peer_id: PeerId,
-                                    pub_id: PublicId,
-                                    close_names: BTreeSet<XorName>)
+                                    pub_id: PublicId)
                                     -> Vec<(XorName, PeerId)> {
         match self.get_state_by_name(pub_id.name()) {
             Some(&PeerState::Client) |
@@ -687,10 +694,15 @@ impl PeerManager {
 
         let _ = self.insert_peer(pub_id, Some(peer_id), PeerState::SearchingForTunnel);
 
+        let name = *pub_id.name();
+        let mut sorted_names =
+            self.peer_map.peer_names().sorted_by(|&lhs, &rhs| name.cmp_distance(lhs, rhs));
+        sorted_names.truncate(NUM_TUNNEL_VIA_NODES);
+
         self.peer_map
             .peers()
             .filter_map(|peer| peer.peer_id.map(|peer_id| (*peer.name(), peer_id)))
-            .filter(|&(name, _)| close_names.contains(&name))
+            .filter(|&(name, _)| sorted_names.contains(&&name))
             .collect()
     }
 
