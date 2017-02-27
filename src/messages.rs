@@ -639,6 +639,15 @@ pub enum MessageContent {
         /// The `part_index`-th part of the serialised user message.
         payload: Vec<u8>,
     },
+    /// Confirm with section that the candidate is about to resource prove.
+    ///
+    /// Sent from the `NaeManager` to the `NaeManager`.
+    AcceptAsCandidate {
+        /// Supplied `PublicId`, but with the new name
+        expect_id: PublicId,
+        /// Client authority of the candidate
+        client_auth: Authority<XorName>,
+    },
     /// Approves the joining node as a routing node.
     ///
     /// Sent from Group Y to the joining node.
@@ -796,6 +805,12 @@ impl Debug for MessageContent {
                        priority,
                        cacheable,
                        hash)
+            }
+            AcceptAsCandidate { ref expect_id, ref client_auth } => {
+                write!(formatter,
+                       "AcceptAsCandidate {{ {:?}, {:?} }}",
+                       expect_id,
+                       client_auth)
             }
             NodeApproval { ref record_id, ref sections } => {
                 write!(formatter,

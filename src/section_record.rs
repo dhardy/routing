@@ -54,15 +54,6 @@ pub enum SectionChange {
     SectionSplit {
         prev_id: RecordId,
     },
-    /// Record addition of a candidate node. Once accepted as a candidate, it must complete
-    /// resource proofs to be accepted as a full node, otherwise it times out.
-    AddCandidate {
-        // TODO: some fields can probably be removed later, or may not need to be in the record
-        prev_id: RecordId,
-        new_pub_id: PublicId,
-        /// Client authority of the candidate
-        client_auth: Authority<XorName>,
-    },
     /// Record the approval of a candidate to become a full routing node.
     /// 
     /// (The name may be a little confusing since the node was already added as a candidate. But
@@ -98,7 +89,6 @@ impl SectionChange {
             InitialNode(_) => 10000,
             StartPoint(_) => 9999,
             SectionSplit {..} => 2000,
-            AddCandidate {..} => 100,
             AddNode {..} => 1000,
         }
     }
@@ -109,7 +99,6 @@ impl SectionChange {
         match self {
             InitialNode(_) | StartPoint(_) => {}
             SectionSplit { ref mut prev_id } |
-            AddCandidate { ref mut prev_id, .. } |
             AddNode { ref mut prev_id, .. } => {
                 *prev_id = id
             }
@@ -192,7 +181,6 @@ impl RecordEntry {
             NodeLost { prev_hash, .. } |
             */
             SectionSplit { ref prev_id, .. } |
-            AddCandidate { ref prev_id, .. } |
             AddNode { ref prev_id, .. } => {
                 if *prev_id != prev_entry.id {
                     return false;

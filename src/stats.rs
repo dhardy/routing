@@ -51,6 +51,7 @@ pub struct Stats {
     msg_get_account_info: usize,
     msg_get_node_name: usize,
     msg_expect_candidate: usize,
+    msg_accept_as_candidate: usize,
     msg_refresh: usize,
     msg_connection_info_req: usize,
     msg_connection_info_rsp: usize,
@@ -146,6 +147,7 @@ impl Stats {
         match msg.content {
             MessageContent::GetNodeName { .. } => self.msg_get_node_name += 1,
             MessageContent::ExpectCandidate { .. } => self.msg_expect_candidate += 1,
+            MessageContent::AcceptAsCandidate { .. } => self.msg_accept_as_candidate += 1,
             MessageContent::ConnectionInfoRequest { .. } => self.msg_connection_info_req += 1,
             MessageContent::ConnectionInfoResponse { .. } => self.msg_connection_info_rsp += 1,
             MessageContent::SectionUpdate { .. } => self.msg_section_update += 1,
@@ -220,12 +222,13 @@ impl Stats {
                   self.msg_section_record);
             info!(target: "routing_stats",
                   "Stats - Hops (Request/Response) - GetNodeName: {}/{}, ExpectCandidate: {}, \
-                   SectionUpdate: {}, SectionSplit: {}, \
+                   AcceptAsCandidate: {}, SectionUpdate: {}, SectionSplit: {}, \
                    OwnSectionMerge: {}, OtherSectionMerge: {}, RoutingTable: {}/{}, \
                    ConnectionInfo: {}/{}, NodeApproval: {}, Ack: {}",
                   self.msg_get_node_name,
                   self.msg_get_node_name_rsp,
                   self.msg_expect_candidate,
+                  self.msg_accept_as_candidate,
                   self.msg_section_update,
                   self.msg_section_split,
                   self.msg_own_section_merge,

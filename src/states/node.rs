@@ -820,6 +820,7 @@ impl Node {
                 OwnSectionMerge(..) |
                 OtherSectionMerge(..) |
                 ExpectCandidate { .. } |
+                AcceptAsCandidate { .. } |
                 ConnectionInfoRequest { .. } |
                 SectionUpdate { .. } |
                 RoutingTableRequest(..) |
@@ -866,6 +867,9 @@ impl Node {
             }
             (ExpectCandidate { expect_id, client_auth, message_id }, Section(_), Section(_)) => {
                 self.handle_expect_candidate(expect_id, client_auth, message_id)
+            }
+            (AcceptAsCandidate { expect_id, client_auth }, Section(_), Section(_)) => {
+                self.handle_accept_as_candidate(expect_id, client_auth)
             }
             (ConnectionInfoRequest(conn_info), src @ Client { .. }, dst @ ManagedNode(_)) |
             (ConnectionInfoRequest(conn_info), src @ ManagedNode(_), dst @ ManagedNode(_)) => {
@@ -1901,14 +1905,16 @@ impl Node {
             self.disconnect_peer(&peer_id);
         }
 
-        let original_name = *candidate_id.name();
-        candidate_id.set_name(self.routing_table().assign_to_min_len_prefix(&original_name));
+        if candidate_id.signing_public_key() == self.full_id.public_id().signing_public_key() {
+            return Ok(()); // This is a delayed message belonging to our own node name request.
+        }
 
         let original_name = *candidate_id.name();
         let relocated_name = self.next_node_name
             .take()
             .unwrap_or_else(|| self.routing_table().assign_to_min_len_prefix(&original_name));
         candidate_id.set_name(relocated_name);
+
         if self.routing_table().should_join_our_section(candidate_id.name()).is_err() {
             let request_content = MessageContent::ExpectCandidate {
                 expect_id: candidate_id,
@@ -1921,29 +1927,17 @@ impl Node {
         }
 
         self.route_mgr.expect_candidate(*candidate_id.name(), client_auth)?;
-        let entry = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
-            Ok((prev_id, members)) => {
-                let change = SectionChange::AddCandidate {
-                    prev_id: prev_id,
-                    new_pub_id: candidate_id,
-                    client_auth: client_auth,
-                };
-                RecordEntry::new(members, change)
-            }
-            Err(e) => {
-                warn!("{:?} Failed to create SectionChange::AddCandidate: {:?}",
-                      self,
-                      e);
-                return Ok(());
-            }
+        let response_content = MessageContent::AcceptAsCandidate {
+            expect_id: candidate_id,
+            client_auth: client_auth,
         };
         info!("{:?} Expecting candidate {} via {:?}.",
               self,
               candidate_id.name(),
               client_auth);
 
-        self.send_record_entry_to_section(entry);
-        Ok(())
+        let src = Authority::Section(*candidate_id.name());
+        self.send_routing_message(src, src, response_content)
     }
 
     // Received by Y; From Y -> Y
@@ -2459,7 +2453,6 @@ impl Node {
         enum Action {
             None,
             Split,
-            Candidate(PublicId, Authority<XorName>),
             AddNode(RecordId, PublicId, Authority<XorName>),
         }
 
@@ -2469,9 +2462,6 @@ impl Node {
             match entry.change {
                 InitialNode(_) | StartPoint(_) => Action::None,
                 SectionSplit { .. } => Action::Split,
-                AddCandidate { new_pub_id, client_auth, .. } => {
-                    Action::Candidate(new_pub_id, client_auth)
-                }
                 AddNode { new_pub_id, client_auth, .. } => {
                     Action::AddNode(entry.id, new_pub_id, client_auth)
                 }
@@ -2487,9 +2477,6 @@ impl Node {
                 self.handle_section_split(our_prefix, outbox);
                 Ok(())
             }
-            Action::Candidate(expect_id, client_auth) => {
-                self.handle_accept_as_candidate(expect_id, client_auth)
-            }
             Action::AddNode(entry_id, new_id, client_auth) => {
                 self.handle_candidate_approval(entry_id, new_id, client_auth, outbox);
                 Ok(())
@@ -2504,11 +2491,6 @@ impl Node {
             // should never be accumulated:
             InitialNode(_) | StartPoint(_) => false,
             SectionSplit { .. } => self.routing_table().we_should_split(),
-            AddCandidate { .. } => {
-                // TODO: when would we want to retry adding a candidate? For now, always reject
-                // if the record entry doesn't get appended first time.
-                false
-            }
             AddNode { ref new_pub_id, .. } => {
                 self.route_mgr.is_valid_candidate(&self.peer_mgr, new_pub_id)
             }
