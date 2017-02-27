@@ -1403,6 +1403,7 @@ impl Node {
                             public_id: &PublicId,
                             peer_id: &PeerId,
                             outbox: &mut EventBox) {
+        // TODO: should happen in RouteManager::handle_candidate_approval
         self.peer_mgr.set_to_full_node(public_id, peer_id);
         match self.route_mgr.add_to_routing_table(public_id) {
             Ok(()) => {}
@@ -1963,8 +1964,8 @@ impl Node {
         self.candidate_timer_token = Some(self.timer
             .schedule(Duration::from_secs(RESOURCE_PROOF_DURATION_SECS)));
 
-        let response_content = match self.route_mgr
-            .accept_as_candidate(&self.peer_mgr, *candidate_id.name(), client_auth) {
+        self.route_mgr.accept_as_candidate(*candidate_id.name(), client_auth);
+        let response_content = match self.route_mgr.get_prev_id_and_members(&self.peer_mgr) {
             Ok((record_id, members)) => {
                 MessageContent::GetNodeNameResponse {
                     relocated_id: candidate_id,

@@ -34,7 +34,7 @@ use xor_name::XorName;
 /// our section) and sending a `CandidateApproval` for this candidate.  If the candidate cannot
 /// satisfy the proof of resource challenge within this time, no `CandidateApproval` is sent.
 pub const RESOURCE_PROOF_DURATION_SECS: u64 = 300;
-/// Time (in seconds) after which a `VotedFor` candidate will be removed.
+/// Time (in seconds) after which a node will be removed if not accepted as a candidate.
 const CANDIDATE_ACCEPT_TIMEOUT_SECS: u64 = 60;
 /// Time (in seconds) the node waits for connection from an expected node.
 const NODE_CONNECT_TIMEOUT_SECS: u64 = 60;
@@ -178,21 +178,13 @@ impl RouteManager {
     /// Returns the identifier for the last record entry and the member list for our section at
     /// this time.
     pub fn accept_as_candidate(&mut self,
-                               peer_mgr: &PeerManager,
                                candidate_name: XorName,
-                               client_auth: Authority<XorName>)
-                               -> Result<(RecordId, BTreeSet<PublicId>), RoutingError> {
+                               client_auth: Authority<XorName>) {
         self.remove_unapproved_candidates(&candidate_name);
         self.candidates
             .entry(candidate_name)
             .or_insert_with(|| Candidate::new(client_auth))
             .state = CandidateState::AcceptedAsCandidate;
-
-        let record_id = self.record.last_id().ok_or(SectionRecordError::InvalidState)?;
-        let our_section = self.table.our_section();
-        // TODO: we may need a new record entry here; we should get the section list from the
-        // record once it's the definitive source.)
-        Ok((record_id, peer_mgr.get_pub_ids(our_section, self.record.own_id()).into()))
     }
 
     /// Verifies proof of resource.  If the response is not the current candidate, or if it fails
