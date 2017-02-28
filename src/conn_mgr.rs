@@ -106,8 +106,12 @@ impl ConnManager {
         Transition::Stay
     }
 
-    /// If preparing connection info failed with the given token, prepares and returns a new token.
-    pub fn make_new_connection_info_token(&mut self, token: u32) {
+    /// If preparing connection info failed with the given token, tries again with a new token.
+    pub fn retry_conn_info(&mut self, err: CrustError, token: u32) {
+        error!("{:?} Failed to prepare connection info: {:?}. Retrying.",
+               self,
+               err);
+
         if let Some(pub_id) = self.remove_conn_token(token) {
             let new_token = rand::random();
             self.add_conn_token(new_token, pub_id);
@@ -115,7 +119,7 @@ impl ConnManager {
             return;
         }
 
-        debug!("{:?} Failed to prepare connection info, but no entry found in token map",
+        debug!("{:?} Failed to prepare connection info: old token not ",
                self);
     }
 }

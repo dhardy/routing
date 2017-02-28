@@ -21,8 +21,7 @@ use action::Action;
 use cache::Cache;
 
 use conn_mgr::ConnManager;
-use crust::{ConnectionInfoResult, CrustError, PeerId, PrivConnectionInfo, PubConnectionInfo,
-            Service};
+use crust::{ConnectionInfoResult, PeerId, PrivConnectionInfo, PubConnectionInfo, Service};
 use crust::Event as CrustEvent;
 use error::{InterfaceError, RoutingError};
 use event::Event;
@@ -341,7 +340,10 @@ impl Node {
                 }
             }
             CrustEvent::ConnectionInfoPrepared(ConnectionInfoResult { result_token, result }) => {
-                self.handle_connection_info_prepared(result_token, result)
+                match result {
+                    Ok(conn_info) => self.handle_connection_info_prepared(result_token, conn_info),
+                    Err(err) => self.conn_mgr.retry_conn_info(err, result_token),
+                }
             }
             event => {
                 // Remaining events are handled within conn_mgr
@@ -1512,21 +1514,10 @@ impl Node {
 
     fn handle_connection_info_prepared(&mut self,
                                        result_token: u32,
-                                       result: Result<PrivConnectionInfo, CrustError>) {
-        let our_connection_info = match result {
-            Err(err) => {
-                error!("{:?} Failed to prepare connection info: {:?}. Retrying.",
-                       self,
-                       err);
-                self.conn_mgr.make_new_connection_info_token(result_token);
-                return;
-            }
-            Ok(connection_info) => connection_info,
-        };
-
-        let our_pub_info = our_connection_info.to_pub_connection_info();
+                                       our_conn_info: PrivConnectionInfo) {
+        let our_pub_info = our_conn_info.to_pub_connection_info();
         match self.peer_mgr
-            .connection_info_prepared(&mut self.conn_mgr, result_token, our_connection_info) {
+            .connection_info_prepared(&mut self.conn_mgr, result_token, our_conn_info) {
             Err(error) => {
                 // This usually means we have already connected.
                 debug!("{:?} Prepared connection info, but no entry found in token map: {:?}",
