@@ -796,14 +796,22 @@ impl Node {
                 ConnectionInfoRequest { .. } |
                 SectionUpdate { .. } |
                 RoutingTableRequest(..) |
-                RoutingTableResponse { .. } => {
+                RoutingTableResponse { .. } |
+                UserMessagePart { .. } => {
+                    // These messages should not be handled before node approval
                     trace!("{:?} Not approved yet. Delaying message handling: {:?}",
                            self,
                            routing_msg);
                     self.routing_msg_backlog.push(routing_msg);
                     return Ok(());
                 }
-                _ => (),
+                GetNodeName { .. } |
+                ConnectionInfoResponse { .. } |
+                GetNodeNameResponse { .. } |
+                Ack(..) |
+                NodeApproval { .. } => {
+                    // Handle like normal
+                }
             }
         }
 
@@ -1139,7 +1147,7 @@ impl Node {
                       Self::format(elapsed),
                       self.our_prefix());
                 self.candidate_timer_token = None;
-                let _ = self.send_candidate_approval();
+                self.send_candidate_approval();
             }
             Ok(Some((_, _, elapsed))) => {
                 info!("{:?} Candidate {} passed our challenge in {}. Waiting to send approval to \
@@ -2208,24 +2216,17 @@ impl Node {
             self.merge_if_necessary();
 
             outbox.send_event(Event::Tick);
-            return true;
-        }
-
-        if self.rt_timer_token == Some(token) {
+        } else if self.rt_timer_token == Some(token) {
             self.rt_timeout = cmp::min(Duration::from_secs(RT_MAX_TIMEOUT_SECS),
                                        self.rt_timeout * 2);
             trace!("{:?} Scheduling next RT request for {} seconds from now.",
                    self,
                    self.rt_timeout.as_secs());
             self.rt_timer_token = Some(self.timer.schedule(self.rt_timeout));
-            if self.send_rt_request().is_err() {
-                return true;
-            }
+            self.send_rt_request();
         } else if self.candidate_timer_token == Some(token) {
             self.candidate_timer_token = None;
-            if self.send_candidate_approval().is_err() {
-                return true;
-            }
+            self.send_candidate_approval();
         } else if self.candidate_status_token == Some(token) {
             self.candidate_status_token = Some(self.timer
                 .schedule(Duration::from_secs(CANDIDATE_STATUS_INTERVAL_SECS)));
@@ -2251,6 +2252,7 @@ impl Node {
                   APPROVAL_TIMEOUT_SECS);
         }
 
+        // This should be called for any token, excepting get_approval_timer_token:
         self.resend_unacknowledged_timed_out_msgs(token);
 
         true
@@ -2286,13 +2288,19 @@ impl Node {
         false
     }
 
-    fn send_rt_request(&mut self) -> Result<(), RoutingError> {
+    fn send_rt_request(&mut self) {
         if self.is_approved {
             let msg_id = MessageId::new();
             self.rt_msg_id = Some(msg_id);
             let sections = self.peer_mgr.pub_ids_by_section();
             let prefixes = self.peer_mgr.routing_table().prefixes();
-            let digest = sha256::hash(&serialisation::serialise(&(sections, prefixes))?);
+            let digest = sha256::hash(&match serialisation::serialise(&(sections, prefixes)) {
+                Ok(serialised) => serialised,
+                Err(e) => {
+                    warn!("{:?} Serialisation failed: {:?}", self, e);
+                    return;
+                }
+            });
             trace!("{:?} Sending RT request {:?} with digest {:?}",
                    self,
                    msg_id,
@@ -2305,15 +2313,14 @@ impl Node {
                 debug!("{:?} Failed to send RoutingTableRequest: {:?}.", self, err);
             }
         }
-        Ok(())
     }
 
-    fn send_candidate_approval(&mut self) -> Result<(), RoutingError> {
+    fn send_candidate_approval(&mut self) {
         let (candidate_id, client_auth, sections) = match self.peer_mgr.verified_candidate_info() {
             Err(_) => {
                 trace!("{:?} No candidate for which to send CandidateApproval.",
                        self);
-                return Err(RoutingError::UnknownCandidate);
+                return;
             }
             Ok(info) => info,
         };
@@ -2323,7 +2330,7 @@ impl Node {
                    candidate {} since our section is currently merging.",
                    self,
                    candidate_id.name());
-            return Ok(());
+            return;
         }
 
         let src = Authority::Section(*candidate_id.name());
@@ -2340,7 +2347,6 @@ impl Node {
         if let Err(error) = self.send_routing_message(src, src, response_content) {
             debug!("{:?} Failed sending CandidateApproval: {:?}", self, error);
         }
-        Ok(())
     }
 
     fn decrypt_connection_info(&self,
