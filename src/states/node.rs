@@ -19,6 +19,8 @@ use ::QUORUM;
 use ack_manager::{ACK_TIMEOUT_SECS, Ack, AckManager};
 use action::Action;
 use cache::Cache;
+
+use conn_mgr::ConnManager;
 use crust::{ConnectionInfoResult, CrustError, PeerId, PrivConnectionInfo, PubConnectionInfo,
             Service};
 use crust::Event as CrustEvent;
@@ -84,7 +86,7 @@ const CANDIDATE_STATUS_INTERVAL_SECS: u64 = 60;
 pub struct Node {
     ack_mgr: AckManager,
     cacheable_user_msg_cache: UserMessageCache,
-    crust_service: Service,
+    conn_mgr: ConnManager,
     full_id: FullId,
     get_approval_timer_token: Option<u64>,
     approval_progress_timer_token: Option<u64>,
@@ -145,7 +147,7 @@ impl Node {
                                  min_section_size,
                                  Stats::new(),
                                  timer);
-        if let Err(error) = node.crust_service.start_listening_tcp() {
+        if let Err(error) = node.conn_mgr.start_listening_tcp() {
             error!("{:?} Failed to start listening: {:?}", node, error);
             None
         } else {
@@ -200,7 +202,7 @@ impl Node {
             ack_mgr: AckManager::new(),
             cacheable_user_msg_cache:
                 UserMessageCache::with_expiry_duration(user_msg_cache_duration),
-            crust_service: crust_service,
+            conn_mgr: ConnManager::new(*full_id.public_id().name(), crust_service),
             full_id: full_id,
             get_approval_timer_token: None,
             approval_progress_timer_token: None,
@@ -271,7 +273,7 @@ impl Node {
         if log_enabled!(TABLE_LVL) {
             let status_str = format!("{:?} {:?} - Routing Table size: {:3}",
                                      self,
-                                     self.crust_service.id(),
+                                     self.crust_service().id(),
                                      self.stats.cur_routing_table_size);
             let network_estimate = match self.peer_mgr.routing_table().network_size_estimate() {
                 (n, true) => format!("Exact network size: {}", n),
@@ -343,7 +345,7 @@ impl Node {
             }
             CrustEvent::ListenerStarted(port) => {
                 trace!("{:?} Listener started on port {}.", self, port);
-                self.crust_service.set_service_discovery_listen(true);
+                self.crust_service().set_service_discovery_listen(true);
                 return Transition::Stay;
             }
             CrustEvent::ListenerFailed => {
@@ -388,12 +390,12 @@ impl Node {
     }
 
     fn handle_connect_success(&mut self, peer_id: PeerId) {
-        if peer_id == self.crust_service.id() {
+        if peer_id == self.crust_service().id() {
             debug!("{:?} Received ConnectSuccess event with our Crust peer ID.",
                    self);
             return;
         }
-        if !self.crust_service.is_peer_whitelisted(&peer_id) {
+        if !self.crust_service().is_peer_whitelisted(&peer_id) {
             debug!("{:?} Received ConnectSuccess, but {:?} is not whitelisted.",
                    self,
                    peer_id);
@@ -430,7 +432,7 @@ impl Node {
     }
 
     fn handle_connect_failure(&mut self, peer_id: PeerId) {
-        if peer_id == self.crust_service.id() {
+        if peer_id == self.crust_service().id() {
             debug!("{:?} Received ConnectFailure event with our Crust peer ID.",
                    self);
             return;
@@ -467,7 +469,7 @@ impl Node {
                 self.handle_direct_message(direct_msg, peer_id, outbox)
             }
             Ok(Message::TunnelDirect { content, src, dst }) => {
-                if dst == self.crust_service.id() &&
+                if dst == self.crust_service().id() &&
                    self.tunnels.tunnel_for(&src) == Some(&peer_id) {
                     self.handle_direct_message(content, src, outbox)
                 } else if self.tunnels.has_clients(src, dst) {
@@ -489,7 +491,7 @@ impl Node {
                 }
             }
             Ok(Message::TunnelHop { content, src, dst }) => {
-                if dst == self.crust_service.id() &&
+                if dst == self.crust_service().id() &&
                    self.tunnels.tunnel_for(&src) == Some(&peer_id) {
                     self.handle_hop_message(content, src)
                 } else if self.tunnels.has_clients(src, dst) {
@@ -1237,7 +1239,7 @@ impl Node {
         let src = Authority::Client {
             client_key: *self.full_id.public_id().signing_public_key(),
             proxy_node_name: proxy_name,
-            peer_id: self.crust_service.id(),
+            peer_id: self.crust_service().id(),
         };
         let dst = Authority::Section(*self.name());
 
@@ -1257,7 +1259,7 @@ impl Node {
                               public_id: PublicId,
                               peer_id: PeerId,
                               client_restriction: bool) {
-        if !client_restriction && !self.crust_service.is_peer_whitelisted(&peer_id) {
+        if !client_restriction && !self.crust_service().is_peer_whitelisted(&peer_id) {
             warn!("{:?} Client is not whitelisted, so dropping connection.",
                   self);
             self.disconnect_peer(&peer_id);
@@ -1329,7 +1331,7 @@ impl Node {
                                  outbox: &mut EventBox) {
         let name = public_id.name();
         debug!("{:?} Handling CandidateIdentify from {:?}.", self, name);
-        let (difficulty, target_size) = if self.crust_service.is_peer_hard_coded(&peer_id) ||
+        let (difficulty, target_size) = if self.crust_service().is_peer_hard_coded(&peer_id) ||
                                            self.peer_mgr.get_joining_node(&peer_id).is_some() {
             (0, 1)
         } else {
@@ -1543,7 +1545,7 @@ impl Node {
                     }
                     Ok(new_token) => new_token,
                 };
-                self.crust_service.prepare_connection_info(new_token);
+                self.crust_service().prepare_connection_info(new_token);
                 return;
             }
             Ok(connection_info) => connection_info,
@@ -1572,7 +1574,7 @@ impl Node {
                                their_info.id(),
                                pub_id.name());
                         self.send_connection_info(our_pub_info, pub_id, src, dst, Some(msg_id));
-                        let _ = self.crust_service.connect(our_info, their_info);
+                        let _ = self.crust_service().connect(our_info, their_info);
                     }
                 }
             }
@@ -1613,12 +1615,12 @@ impl Node {
                                           dst,
                                           src,
                                           Some(message_id));
-                if let Err(error) = self.crust_service.connect(our_info, their_info) {
+                if let Err(error) = self.crust_service().connect(our_info, their_info) {
                     trace!("{:?} Unable to connect to {:?} - {:?}", self, src, error);
                 }
             }
             Ok(Prepare(token)) => {
-                self.crust_service.prepare_connection_info(token);
+                self.crust_service().prepare_connection_info(token);
             }
             Ok(IsProxy) |
             Ok(IsClient) |
@@ -1656,7 +1658,7 @@ impl Node {
                        self,
                        public_id.name(),
                        peer_id);
-                if let Err(error) = self.crust_service.connect(our_info, their_info) {
+                if let Err(error) = self.crust_service().connect(our_info, their_info) {
                     debug!("{:?} Crust failed initiating a connection to  {:?} ({:?}): {:?}",
                            self,
                            public_id.name(),
@@ -1722,7 +1724,7 @@ impl Node {
                    self,
                    dst_id,
                    peer_id);
-            if !self.crust_service.is_connected(&dst_id) {
+            if !self.crust_service().is_connected(&dst_id) {
                 self.dropped_peer(&dst_id, outbox);
             }
         }
@@ -1765,7 +1767,7 @@ impl Node {
             debug!("{:?} Disconnecting {:?}. Calling crust::Service::disconnect.",
                    self,
                    peer_id);
-            let _ = self.crust_service.disconnect(*peer_id);
+            let _ = self.crust_service().disconnect(*peer_id);
             let _ = self.peer_mgr.remove_peer(peer_id);
         }
     }
@@ -2211,7 +2213,7 @@ impl Node {
 
             for peer_id in self.peer_mgr.remove_expired_connections() {
                 debug!("{:?} Disconnecting from timed out peer {:?}", self, peer_id);
-                let _ = self.crust_service.disconnect(peer_id);
+                let _ = self.crust_service().disconnect(peer_id);
             }
             self.merge_if_necessary();
 
@@ -2437,7 +2439,7 @@ impl Node {
         let priority = signed_msg.priority();
         let routing_msg = signed_msg.routing_message().clone();
 
-        let (peer_id, bytes) = if self.crust_service.is_connected(&target) {
+        let (peer_id, bytes) = if self.crust_service().is_connected(&target) {
             let serialised = self.to_hop_bytes(signed_msg, route, sent_to)?;
             (target, serialised)
         } else if let Some(&tunnel_id) = self.tunnels.tunnel_for(&target) {
@@ -2591,7 +2593,7 @@ impl Node {
                                       self.full_id.signing_private_key())?;
         let message = Message::TunnelHop {
             content: hop_msg,
-            src: self.crust_service.id(),
+            src: self.crust_service().id(),
             dst: dst,
         };
 
@@ -2641,7 +2643,7 @@ impl Node {
         self.peer_mgr.allow_connect(&their_name)?;
 
         if let Some(token) = self.peer_mgr.get_connection_token(src, dst, their_public_id) {
-            self.crust_service.prepare_connection_info(token);
+            self.crust_service().prepare_connection_info(token);
             return Ok(());
         }
 
@@ -2826,7 +2828,7 @@ impl Node {
         if let Some(&tunnel_id) = self.tunnels.tunnel_for(&dst_id) {
             let message = Message::TunnelDirect {
                 content: direct_message,
-                src: self.crust_service.id(),
+                src: self.crust_service().id(),
                 dst: dst_id,
             };
             self.send_message(&tunnel_id, message);
@@ -2898,7 +2900,7 @@ impl Node {
 
 impl Base for Node {
     fn crust_service(&self) -> &Service {
-        &self.crust_service
+        self.conn_mgr.crust_service()
     }
 
     fn full_id(&self) -> &FullId {
@@ -2921,7 +2923,7 @@ impl Base for Node {
     }
 
     fn handle_lost_peer(&mut self, peer_id: PeerId, outbox: &mut EventBox) -> Transition {
-        if peer_id == self.crust_service.id() {
+        if peer_id == self.crust_service().id() {
             error!("{:?} LostPeer fired with our crust peer ID.", self);
             return Transition::Stay;
         }

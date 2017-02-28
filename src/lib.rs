@@ -144,6 +144,7 @@ mod ack_manager;
 mod action;
 mod client;
 mod cache;
+mod conn_mgr;
 mod data;
 mod error;
 mod event;
