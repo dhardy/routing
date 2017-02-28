@@ -1518,24 +1518,15 @@ impl Node {
                 error!("{:?} Failed to prepare connection info: {:?}. Retrying.",
                        self,
                        err);
-                let new_token = match self.peer_mgr.get_new_connection_info_token(result_token) {
-                    Err(error) => {
-                        debug!("{:?} Failed to prepare connection info, but no entry found in \
-                               token map: {:?}",
-                               self,
-                               error);
-                        return;
-                    }
-                    Ok(new_token) => new_token,
-                };
-                self.crust_service().prepare_connection_info(new_token);
+                self.conn_mgr.make_new_connection_info_token(result_token);
                 return;
             }
             Ok(connection_info) => connection_info,
         };
 
         let our_pub_info = our_connection_info.to_pub_connection_info();
-        match self.peer_mgr.connection_info_prepared(result_token, our_connection_info) {
+        match self.peer_mgr
+            .connection_info_prepared(&mut self.conn_mgr, result_token, our_connection_info) {
             Err(error) => {
                 // This usually means we have already connected.
                 debug!("{:?} Prepared connection info, but no entry found in token map: {:?}",
@@ -1586,7 +1577,12 @@ impl Node {
         let peer_id = their_connection_info.id();
         use peer_manager::ConnectionInfoReceivedResult::*;
         match self.peer_mgr
-            .connection_info_received(src, dst, public_id, their_connection_info, message_id) {
+            .connection_info_received(&mut self.conn_mgr,
+                                      src,
+                                      dst,
+                                      public_id,
+                                      their_connection_info,
+                                      message_id) {
             Ok(Ready(our_info, their_info)) => {
                 debug!("{:?} Already sent a connection info request to {:?} ({:?}); resending \
                         our same details as a response.",
@@ -1631,7 +1627,8 @@ impl Node {
         let peer_id = their_connection_info.id();
         use peer_manager::ConnectionInfoReceivedResult::*;
         match self.peer_mgr
-            .connection_info_received(Authority::ManagedNode(src),
+            .connection_info_received(&mut self.conn_mgr,
+                                      Authority::ManagedNode(src),
                                       dst,
                                       public_id,
                                       their_connection_info,
@@ -2625,7 +2622,8 @@ impl Node {
 
         self.peer_mgr.allow_connect(&their_name)?;
 
-        if let Some(token) = self.peer_mgr.get_connection_token(src, dst, their_public_id) {
+        if let Some(token) = self.peer_mgr
+            .get_connection_token(&mut self.conn_mgr, src, dst, their_public_id) {
             self.crust_service().prepare_connection_info(token);
             return Ok(());
         }

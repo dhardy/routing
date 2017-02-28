@@ -18,14 +18,14 @@
 
 
 use XorName;
-
 use crust::{CrustError, PeerId, Service};
 use crust::Event as CrustEvent;
-
 use event::Event;
+use id::PublicId;
 use outbox::EventBox;
-
+use rand;
 use state_machine::Transition;
+use std::collections::HashMap;
 use std::fmt::{self, Debug};
 
 /// Manages connections via Crust
@@ -33,15 +33,17 @@ pub struct ConnManager {
     // TODO: do we need to keep a redundant copy of the name?
     name: XorName,
     service: Service,
+    connection_tokens: HashMap<u32, PublicId>,
 }
 
-// first impl: constructors and simple getters
+// first impl: constructors and simple getters and setters
 impl ConnManager {
     /// Create, given a name and Crust service
     pub fn new(name: XorName, service: Service) -> Self {
         ConnManager {
             name: name,
             service: service,
+            connection_tokens: HashMap::new(),
         }
     }
 
@@ -53,6 +55,16 @@ impl ConnManager {
     /// Get our `PeerId`
     pub fn id(&self) -> PeerId {
         self.service.id()
+    }
+
+    /// Add a connection token. TODO: remove this when possible.
+    pub fn add_conn_token(&mut self, token: u32, pub_id: PublicId) {
+        let _old: Option<PublicId> = self.connection_tokens.insert(token, pub_id);
+    }
+
+    /// Remove a connection token. TODO: remove this when possible.
+    pub fn remove_conn_token(&mut self, token: u32) -> Option<PublicId> {
+        self.connection_tokens.remove(&token)
     }
 
     fn name(&self) -> &XorName {
@@ -92,6 +104,19 @@ impl ConnManager {
             }
         }
         Transition::Stay
+    }
+
+    /// If preparing connection info failed with the given token, prepares and returns a new token.
+    pub fn make_new_connection_info_token(&mut self, token: u32) {
+        if let Some(pub_id) = self.remove_conn_token(token) {
+            let new_token = rand::random();
+            self.add_conn_token(new_token, pub_id);
+            self.service.prepare_connection_info(new_token);
+            return;
+        }
+
+        debug!("{:?} Failed to prepare connection info, but no entry found in token map",
+               self);
     }
 }
 

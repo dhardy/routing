@@ -15,6 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
+use conn_mgr::ConnManager;
 use crust::{PeerId, PrivConnectionInfo, PubConnectionInfo};
 use error::RoutingError;
 use id::PublicId;
@@ -372,7 +373,6 @@ impl Candidate {
 /// This keeps track of which nodes we know of, which ones we have tried to connect to, which IDs
 /// we have verified, whom we are directly connected to or via a tunnel.
 pub struct PeerManager {
-    connection_token_map: HashMap<u32, PublicId>,
     peer_map: PeerMap,
     /// Peers we connected to but don't know about yet
     unknown_peers: HashMap<PeerId, Instant>,
@@ -389,7 +389,6 @@ impl PeerManager {
     /// Returns a new peer manager with no entries.
     pub fn new(min_section_size: usize, our_public_id: PublicId) -> PeerManager {
         PeerManager {
-            connection_token_map: HashMap::new(),
             peer_map: PeerMap::new(),
             unknown_peers: HashMap::new(),
             expected_peers: HashMap::new(),
@@ -1170,10 +1169,11 @@ impl PeerManager {
     /// if that's already present and sets the status to `CrustConnecting`. It also returns the
     /// source and destination authorities for sending the serialised connection info to the peer.
     pub fn connection_info_prepared(&mut self,
+                                    conn_mgr: &mut ConnManager,
                                     token: u32,
                                     our_info: PrivConnectionInfo)
                                     -> Result<ConnectionInfoPreparedResult, Error> {
-        let pub_id = self.connection_token_map.remove(&token).ok_or(Error::PeerNotFound)?;
+        let pub_id = conn_mgr.remove_conn_token(token).ok_or(Error::PeerNotFound)?;
         let (us_as_src, them_as_dst, opt_their_info) = match self.peer_map
             .remove_by_name(pub_id.name()) {
             Some(Peer { state: PeerState::ConnectionInfoPreparing { us_as_src,
@@ -1208,6 +1208,7 @@ impl PeerManager {
     /// Inserts the given connection info in the map to wait for the preparation of our own info, or
     /// returns both if that's already present and sets the status to `CrustConnecting`.
     pub fn connection_info_received(&mut self,
+                                    conn_mgr: &mut ConnManager,
                                     src: Authority<XorName>,
                                     dst: Authority<XorName>,
                                     pub_id: PublicId,
@@ -1276,7 +1277,7 @@ impl PeerManager {
                 };
                 self.insert_peer(pub_id, Some(peer_id), state);
                 let token = rand::random();
-                let _ = self.connection_token_map.insert(token, pub_id);
+                conn_mgr.add_conn_token(token, pub_id);
                 Ok(ConnectionInfoReceivedResult::Prepare(token))
             }
         }
@@ -1285,6 +1286,7 @@ impl PeerManager {
     /// Returns a new token for Crust's `prepare_connection_info` and puts the given peer into
     /// `ConnectionInfoPreparing` status.
     pub fn get_connection_token(&mut self,
+                                conn_mgr: &mut ConnManager,
                                 src: Authority<XorName>,
                                 dst: Authority<XorName>,
                                 pub_id: PublicId)
@@ -1303,7 +1305,7 @@ impl PeerManager {
             None => (),
         }
         let token = rand::random();
-        let _ = self.connection_token_map.insert(token, pub_id);
+        conn_mgr.add_conn_token(token, pub_id);
         self.insert_peer(pub_id,
                          None,
                          PeerState::ConnectionInfoPreparing {
@@ -1312,14 +1314,6 @@ impl PeerManager {
                              their_info: None,
                          });
         Some(token)
-    }
-
-    /// If preparing connection info failed with the given token, prepares and returns a new token.
-    pub fn get_new_connection_info_token(&mut self, token: u32) -> Result<u32, Error> {
-        let pub_id = self.connection_token_map.remove(&token).ok_or(Error::PeerNotFound)?;
-        let new_token = rand::random();
-        let _ = self.connection_token_map.insert(new_token, pub_id);
-        Ok(new_token)
     }
 
     /// Returns all peers we are looking for a tunnel to.
