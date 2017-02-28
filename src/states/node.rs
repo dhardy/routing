@@ -343,24 +343,9 @@ impl Node {
             CrustEvent::ConnectionInfoPrepared(ConnectionInfoResult { result_token, result }) => {
                 self.handle_connection_info_prepared(result_token, result)
             }
-            CrustEvent::ListenerStarted(port) => {
-                trace!("{:?} Listener started on port {}.", self, port);
-                self.crust_service().set_service_discovery_listen(true);
-                return Transition::Stay;
-            }
-            CrustEvent::ListenerFailed => {
-                error!("{:?} Failed to start listening.", self);
-                outbox.send_event(Event::Terminate);
-                return Transition::Terminate;
-            }
-            CrustEvent::WriteMsgSizeProhibitive(peer_id, msg) => {
-                error!("{:?} Failed to send {}-byte message to {:?}. Message too large.",
-                       self,
-                       msg.len(),
-                       peer_id);
-            }
-            _ => {
-                debug!("{:?} - Unhandled crust event: {:?}", self, crust_event);
+            event => {
+                // Remaining events are handled within conn_mgr
+                return self.conn_mgr.handle_event(event, outbox);
             }
         }
 

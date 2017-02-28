@@ -16,10 +16,16 @@
 // relating to use of the SAFE Network Software.
 
 
+
 use XorName;
 
 use crust::{CrustError, PeerId, Service};
+use crust::Event as CrustEvent;
 
+use event::Event;
+use outbox::EventBox;
+
+use state_machine::Transition;
 use std::fmt::{self, Debug};
 
 /// Manages connections via Crust
@@ -29,6 +35,7 @@ pub struct ConnManager {
     service: Service,
 }
 
+// first impl: constructors and simple getters
 impl ConnManager {
     /// Create, given a name and Crust service
     pub fn new(name: XorName, service: Service) -> Self {
@@ -36,12 +43,6 @@ impl ConnManager {
             name: name,
             service: service,
         }
-    }
-
-    /// Starts accepting TCP connections. This just wraps the Crust `Service` function by the same
-    /// name.
-    pub fn start_listening_tcp(&mut self) -> Result<(), CrustError> {
-        self.service.start_listening_tcp()
     }
 
     /// Get direct access to the Crust service. TODO: remove this when possible.
@@ -56,6 +57,41 @@ impl ConnManager {
 
     fn name(&self) -> &XorName {
         &self.name
+    }
+}
+
+// second impl: the rest
+impl ConnManager {
+    /// Starts accepting TCP connections. This just wraps the Crust `Service` function by the same
+    /// name.
+    pub fn start_listening_tcp(&mut self) -> Result<(), CrustError> {
+        self.service.start_listening_tcp()
+    }
+
+    /// Handles a subset of Crust events
+    pub fn handle_event(&mut self, event: CrustEvent, outbox: &mut EventBox) -> Transition {
+        use self::CrustEvent::*;
+        match event {
+            ListenerStarted(port) => {
+                trace!("{:?} Listener started on port {}.", self, port);
+                self.service.set_service_discovery_listen(true);
+            }
+            ListenerFailed => {
+                error!("{:?} Failed to start listening.", self);
+                outbox.send_event(Event::Terminate);
+                return Transition::Terminate;
+            }
+            WriteMsgSizeProhibitive(peer_id, msg) => {
+                error!("{:?} Failed to send {}-byte message to {:?}. Message too large.",
+                       self,
+                       msg.len(),
+                       peer_id);
+            }
+            event => {
+                debug!("{:?} Unhandled crust event: {:?}", self, event);
+            }
+        }
+        Transition::Stay
     }
 }
 
