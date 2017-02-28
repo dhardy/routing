@@ -18,7 +18,7 @@
 
 use XorName;
 
-use crust::{CrustError, Service};
+use crust::{CrustError, PeerId, Service};
 
 use std::fmt::{self, Debug};
 
@@ -47,6 +47,11 @@ impl ConnManager {
     /// Get direct access to the Crust service. TODO: remove this when possible.
     pub fn crust_service(&self) -> &Service {
         &self.service
+    }
+
+    /// Get our `PeerId`
+    pub fn id(&self) -> PeerId {
+        self.service.id()
     }
 
     fn name(&self) -> &XorName {

@@ -273,7 +273,7 @@ impl Node {
         if log_enabled!(TABLE_LVL) {
             let status_str = format!("{:?} {:?} - Routing Table size: {:3}",
                                      self,
-                                     self.crust_service().id(),
+                                     self.conn_mgr.id(),
                                      self.stats.cur_routing_table_size);
             let network_estimate = match self.peer_mgr.routing_table().network_size_estimate() {
                 (n, true) => format!("Exact network size: {}", n),
@@ -390,7 +390,7 @@ impl Node {
     }
 
     fn handle_connect_success(&mut self, peer_id: PeerId) {
-        if peer_id == self.crust_service().id() {
+        if peer_id == self.conn_mgr.id() {
             debug!("{:?} Received ConnectSuccess event with our Crust peer ID.",
                    self);
             return;
@@ -432,7 +432,7 @@ impl Node {
     }
 
     fn handle_connect_failure(&mut self, peer_id: PeerId) {
-        if peer_id == self.crust_service().id() {
+        if peer_id == self.conn_mgr.id() {
             debug!("{:?} Received ConnectFailure event with our Crust peer ID.",
                    self);
             return;
@@ -469,8 +469,7 @@ impl Node {
                 self.handle_direct_message(direct_msg, peer_id, outbox)
             }
             Ok(Message::TunnelDirect { content, src, dst }) => {
-                if dst == self.crust_service().id() &&
-                   self.tunnels.tunnel_for(&src) == Some(&peer_id) {
+                if dst == self.conn_mgr.id() && self.tunnels.tunnel_for(&src) == Some(&peer_id) {
                     self.handle_direct_message(content, src, outbox)
                 } else if self.tunnels.has_clients(src, dst) {
                     self.send_or_drop(&dst, bytes, content.priority());
@@ -491,8 +490,7 @@ impl Node {
                 }
             }
             Ok(Message::TunnelHop { content, src, dst }) => {
-                if dst == self.crust_service().id() &&
-                   self.tunnels.tunnel_for(&src) == Some(&peer_id) {
+                if dst == self.conn_mgr.id() && self.tunnels.tunnel_for(&src) == Some(&peer_id) {
                     self.handle_hop_message(content, src)
                 } else if self.tunnels.has_clients(src, dst) {
                     self.send_or_drop(&dst, bytes, content.content.priority());
@@ -1239,7 +1237,7 @@ impl Node {
         let src = Authority::Client {
             client_key: *self.full_id.public_id().signing_public_key(),
             proxy_node_name: proxy_name,
-            peer_id: self.crust_service().id(),
+            peer_id: self.conn_mgr.id(),
         };
         let dst = Authority::Section(*self.name());
 
@@ -2593,7 +2591,7 @@ impl Node {
                                       self.full_id.signing_private_key())?;
         let message = Message::TunnelHop {
             content: hop_msg,
-            src: self.crust_service().id(),
+            src: self.conn_mgr.id(),
             dst: dst,
         };
 
@@ -2828,7 +2826,7 @@ impl Node {
         if let Some(&tunnel_id) = self.tunnels.tunnel_for(&dst_id) {
             let message = Message::TunnelDirect {
                 content: direct_message,
-                src: self.crust_service().id(),
+                src: self.conn_mgr.id(),
                 dst: dst_id,
             };
             self.send_message(&tunnel_id, message);
@@ -2923,7 +2921,7 @@ impl Base for Node {
     }
 
     fn handle_lost_peer(&mut self, peer_id: PeerId, outbox: &mut EventBox) -> Transition {
-        if peer_id == self.crust_service().id() {
+        if peer_id == self.conn_mgr.id() {
             error!("{:?} LostPeer fired with our crust peer ID.", self);
             return Transition::Stay;
         }
