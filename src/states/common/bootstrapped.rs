@@ -35,10 +35,7 @@ pub trait Bootstrapped: Base {
     fn ack_mgr_mut(&mut self) -> &mut AckManager;
     fn min_section_size(&self) -> usize;
 
-    fn send_routing_message_via_route(&mut self,
-                                      routing_msg: RoutingMessage,
-                                      route: u8)
-                                      -> Result<(), RoutingError>;
+    fn send_routing_message_via_route(&mut self, routing_msg: RoutingMessage, route: u8);
 
     fn routing_msg_filter(&mut self) -> &mut RoutingMessageFilter;
     fn timer(&mut self) -> &mut Timer;
@@ -115,8 +112,7 @@ pub trait Bootstrapped: Base {
     fn send_routing_message(&mut self,
                             src: Authority<XorName>,
                             dst: Authority<XorName>,
-                            content: MessageContent)
-                            -> Result<(), RoutingError> {
+                            content: MessageContent) {
         let routing_msg = RoutingMessage {
             src: src,
             dst: dst,

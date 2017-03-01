@@ -320,10 +320,7 @@ impl Bootstrapped for Client {
         }
     }
 
-    fn send_routing_message_via_route(&mut self,
-                                      routing_msg: RoutingMessage,
-                                      route: u8)
-                                      -> Result<(), RoutingError> {
+    fn send_routing_message_via_route(&mut self, routing_msg: RoutingMessage, route: u8) {
         self.stats.count_route(route);
 
         if routing_msg.dst.is_client() && self.in_authority(&routing_msg.dst) {

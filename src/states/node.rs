@@ -725,9 +725,14 @@ impl Node {
                              signed_msg: SignedMessage,
                              route: u8,
                              hop_name: XorName,
-                             sent_to: &BTreeSet<XorName>)
-                             -> Result<(), RoutingError> {
-        signed_msg.check_integrity(self.min_section_size())?;
+                             sent_to: &BTreeSet<XorName>) {
+        if let Err(e) = signed_msg.check_integrity(self.min_section_size()) {
+            warn!("{:?} Verification of signed message failed: {:?}. Msg: {:?}",
+                  self,
+                  e,
+                  signed_msg);
+            return;
+        }
 
         // TODO(MAID-1677): Remove this once messages are fully validated.
         // Expect group/section messages to be sent by at least a quorum of `min_section_size`.
@@ -2369,8 +2374,7 @@ impl Node {
                            signed_msg: &SignedMessage,
                            route: u8,
                            hop: &XorName,
-                           sent_to: &BTreeSet<XorName>)
-                           -> Result<(), RoutingError> {
+                           sent_to: &BTreeSet<XorName>) {
         let sent_by_us = hop == self.name() && signed_msg.signed_by(self.full_id().public_id());
         if sent_by_us {
             self.stats.count_route(route);
@@ -2388,13 +2392,22 @@ impl Node {
         }
 
         let (new_sent_to, target_peer_ids) =
-            self.get_targets(signed_msg.routing_message(), route, hop, sent_to)?;
+            match self.get_targets(signed_msg.routing_message(), route, hop, sent_to) {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!("{:?} Failed to send signed message: {:?}. Msg: {:?}",
+                          self,
+                          e,
+                          signed_msg.routing_msg());
+                    return;
+                }
+            };
 
         for target_peer_id in target_peer_ids {
             self.send_signed_msg_to_peer(signed_msg.clone(),
                                          target_peer_id,
                                          route,
-                                         new_sent_to.clone())?;
+                                         new_sent_to.clone());
         }
         Ok(())
     }
@@ -2405,8 +2418,7 @@ impl Node {
                                signed_msg: SignedMessage,
                                target: PeerId,
                                route: u8,
-                               sent_to: BTreeSet<XorName>)
-                               -> Result<(), RoutingError> {
+                               sent_to: BTreeSet<XorName>) {
         let priority = signed_msg.priority();
         let routing_msg = signed_msg.routing_message().clone();
 
@@ -2978,29 +2990,33 @@ impl Bootstrapped for Node {
     // Constructs a signed message, finds the node responsible for accumulation, and either sends
     // this node a signature or tries to accumulate signatures for this message (on success, the
     // accumulator handles or forwards the message).
-    fn send_routing_message_via_route(&mut self,
-                                      routing_msg: RoutingMessage,
-                                      route: u8)
-                                      -> Result<(), RoutingError> {
+    fn send_routing_message_via_route(&mut self, routing_msg: RoutingMessage, route: u8) {
         if !self.in_authority(&routing_msg.src) {
             trace!("{:?} Not part of the source authority. Not sending message {:?}.",
                    self,
                    routing_msg);
-            return Ok(());
+            return;
         }
         if !self.add_to_pending_acks(&routing_msg, route) {
             debug!("{:?} already received an ack for {:?} - so not resending it.",
                    self,
                    routing_msg);
-            return Ok(());
+            return;
         }
         use routing_table::Authority::*;
         let sending_names = match routing_msg.src {
             ClientManager(_) | NaeManager(_) | NodeManager(_) | ManagedNode(_) => {
-                let section = self.peer_mgr
+                let section = match self.peer_mgr
                     .routing_table()
-                    .get_section(self.name())
-                    .ok_or(RoutingError::RoutingTable(RoutingTableError::NoSuchPeer))?;
+                    .get_section(self.name()) {
+                    Some(section) => section,
+                    None => {
+                        warn!("{:?} Failed to send routing message: no such peer. Msg: {:?}",
+                              self,
+                              routing_message);
+                        return;
+                    }
+                };
                 let pub_ids = self.peer_mgr.get_pub_ids(section);
                 vec![SectionList::new(*self.our_prefix(), pub_ids)]
             }
@@ -3026,30 +3042,45 @@ impl Bootstrapped for Node {
             Client { .. } => vec![],
         };
 
-        let signed_msg = SignedMessage::new(routing_msg, &self.full_id, sending_names)?;
-
-        match self.get_signature_target(&signed_msg.routing_message().src, route) {
-            None => Ok(()),
+        match self.get_signature_target(&routing_msg.src, route) {
+            None => (),
             Some(our_name) if our_name == *self.name() => {
+                let signed_msg =
+                    match SignedMessage::new(routing_msg, &self.full_id, sending_names) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            warn!("{:?} Failed to send routing message: {:?}. Msg: {:?}",
+                                  self,
+                                  e,
+                                  routing_msg);
+                            return;
+                        }
+                    };
                 let min_section_size = self.min_section_size();
                 if let Some((msg, route)) =
                     self.sig_accumulator.add_message(signed_msg, min_section_size, route) {
                     if self.in_authority(&msg.routing_message().dst) {
-                        self.handle_signed_message(msg, route, our_name, &BTreeSet::new())?;
+                        self.handle_signed_message(msg, route, our_name, &BTreeSet::new());
                     } else {
-                        self.send_signed_message(&msg, route, &our_name, &BTreeSet::new())?;
+                        self.send_signed_message(&msg, route, &our_name, &BTreeSet::new());
                     }
                 }
-                Ok(())
             }
             Some(target_name) => {
                 if let Some(&peer_id) = self.peer_mgr.get_peer_id(&target_name) {
-                    let direct_msg = signed_msg.routing_message()
-                        .to_signature(self.full_id().signing_private_key())?;
-                    self.send_direct_message(peer_id, direct_msg);
-                    Ok(())
+                    match routing_msg.to_signature(self.full_id().signing_private_key()) {
+                        Ok(direct_msg) => self.send_direct_message(peer_id, direct_msg),
+                        Err(e) => {
+                            warn!("{:?} Failed to send routing message: {:?}. Msg: {:?}",
+                                  self,
+                                  e,
+                                  routing_message);
+                        }
+                    }
                 } else {
-                    Err(RoutingError::RoutingTable(RoutingTableError::NoSuchPeer))
+                    warn!("{:?} Failed to send routing message: no such peer. Msg: {:?}",
+                          self,
+                          routing_message);
                 }
             }
         }
