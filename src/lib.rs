@@ -142,6 +142,7 @@ mod ack_manager;
 mod action;
 mod client;
 mod cache;
+mod consensus;
 mod data;
 mod error;
 mod event;
