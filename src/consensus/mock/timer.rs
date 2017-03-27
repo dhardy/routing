@@ -15,8 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use Scheduler;
-use TimerToken;
+use consensus::{Scheduler, TimerToken};
 use std::collections::HashMap;
 
 pub struct Timers {

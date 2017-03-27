@@ -15,14 +15,12 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::PeerId;
-use ConsensusState;
-use NetworkInterface;
-use message::Message;
-use mock::Timers;
+use consensus::{ConsensusState, NetworkInterface, PeerId};
+use consensus::message::Message;
+use consensus::mock::Timers;
+use consensus::record::{Entry, RecordEntry};
 use rand;
 use rand::distributions::{IndependentSample, Range};
-use record::{Entry, RecordEntry};
 use rust_sodium::crypto::sign;
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
@@ -121,11 +119,10 @@ impl<E: Entry> NetworkInterface<usize, E> for VecDeque<Message<usize, E>> {
 
 #[cfg(test)]
 mod test {
-    use super::{Cluster, TestEntry};
-    use PrintableDigest;
+    use super::{Cluster, RecordEntry, TestEntry};
+    use consensus::PrintableDigest;
+    use consensus::state::State;
     use maidsafe_utilities;
-    use record::RecordEntry;
-    use state::State;
 
     fn print_cluster_states(cluster: &Cluster) {
         debug!("-----------------------");

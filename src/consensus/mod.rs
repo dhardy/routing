@@ -16,8 +16,8 @@
 // relating to use of the SAFE Network Software.
 
 //! Distributed consensus, based on Raft, Tangaroa and PBFT: allows a cluster of partially-trusted
-//! nodes to agree on an ordered sequence of events with a reasonable degree of assurance that
-//! committed events will remain, in order, in the cluster's agreed log of events.
+//! nodes to agree on an ordered sequence of entries with a reasonable degree of assurance that
+//! committed entries will remain, in order, in the cluster's agreed log of entries.
 
 // TODO: remove this when code is used
 #![allow(unused)]

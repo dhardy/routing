@@ -24,8 +24,8 @@ use super::record::{ConfigurationEntry, Entry, Record, RecordEntry, SignedRecord
 use super::state::{State, Votes};
 use rand;
 use rand::distributions::{IndependentSample, Range};
-use rust_sodium::crypto::{hash, sign};
 use rust_sodium::crypto::hash::sha256::Digest;
+use rust_sodium::crypto::sign;
 use std::collections::{BTreeMap, HashSet};
 use std::mem;
 
