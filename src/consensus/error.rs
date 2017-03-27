@@ -16,9 +16,12 @@
 // relating to use of the SAFE Network Software.
 
 quick_error! {
+    /// Consensus error types
     #[derive(Debug)]
     pub enum Error {
+        /// Message received does not appear to be from a member of the consensus cluster
         UnknownSource {}
+        /// Message received has invalid signature
         InvalidSignature {}
     }
 }

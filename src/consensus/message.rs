@@ -23,6 +23,7 @@ use rust_sodium::crypto::hash::sha256::Digest;
 use rust_sodium::crypto::sign;
 use std::fmt;
 
+/// Encapsulation of message sender, recipient, content and signature.
 pub struct Message<T: PeerId, E: Entry> {
     pub src: T,
     pub dst: T,
@@ -30,7 +31,7 @@ pub struct Message<T: PeerId, E: Entry> {
     pub signature: sign::Signature,
 }
 
-// Messages sent between nodes.
+/// Content of messages sent between nodes.
 #[derive(Clone, RustcEncodable)]
 pub enum Content<T: PeerId, E: Entry> {
     AppendEntries(AppendEntries<T, E>),

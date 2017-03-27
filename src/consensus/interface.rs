@@ -19,10 +19,15 @@ use super::{PeerId, TimerToken};
 use super::message::Message;
 use super::record::Entry;
 
+/// Allows sending of messages
 pub trait NetworkInterface<T: PeerId, E: Entry> {
+    /// Send a message
     fn send_message(&mut self, msg: Message<T, E>);
 }
 
+/// Allows creation of timer tokens
 pub trait Scheduler {
+    /// Schedule a call to `ConsensusState::handle_timeout` after the elapsed `seconds` with a new
+    /// `TimerToken`.
     fn schedule(&mut self, seconds: u64) -> TimerToken;
 }
