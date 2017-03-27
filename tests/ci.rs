@@ -37,6 +37,8 @@
 extern crate itertools;
 #[cfg(target_os = "macos")]
 extern crate libc;
+#[macro_use]
+extern crate log;
 extern crate maidsafe_utilities;
 extern crate rand;
 extern crate routing;
@@ -213,6 +215,7 @@ fn wait_for_nodes_to_connect(nodes: &mut [TestNode],
                                                   event_sender,
                                                   event_receiver,
                                                   Duration::from_secs(30)) {
+            trace!("Received event {:?}", test_event);
             if let TestEvent(index, Event::NodeAdded(..)) = test_event {
                 connection_counts[index] += 1;
 
@@ -240,6 +243,7 @@ fn create_connected_nodes(count: usize,
     let mut connection_counts = iter::repeat(0).take(count).collect::<Vec<usize>>();
 
     // Bootstrap node
+    trace!("Creating initial node");
     nodes.push(TestNode::new(0, min_section_size));
 
     // HACK: wait until the above node switches to accepting mode. Would be
@@ -250,6 +254,7 @@ fn create_connected_nodes(count: usize,
     // continuing.
     for _ in 1..count {
         let index = nodes.len();
+        trace!("Creating node {}", index);
         nodes.push(TestNode::new(index, min_section_size));
         wait_for_nodes_to_connect(&mut nodes,
                                   &mut connection_counts,
