@@ -142,7 +142,9 @@ mod ack_manager;
 mod action;
 mod client;
 mod cache;
-mod consensus;
+// TODO: doesn't need to be pub, but this makes the generated doc visible and ensures all exposed
+// items are documented.
+pub mod consensus;
 mod data;
 mod error;
 mod event;

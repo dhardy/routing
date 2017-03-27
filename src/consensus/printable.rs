@@ -19,6 +19,7 @@ use rust_sodium::crypto::hash::sha256::Digest;
 use rust_sodium::crypto::sign::Signature;
 use std::fmt;
 
+/// Wrapper for convenient debug formatting of a subset of a digest.
 pub struct PrintableDigest(pub Digest);
 
 impl fmt::Debug for PrintableDigest {
@@ -28,6 +29,7 @@ impl fmt::Debug for PrintableDigest {
     }
 }
 
+/// Wrapper for convenient debug formatting of a subset of a signature.
 pub struct PrintableSignature(pub Signature);
 
 impl fmt::Debug for PrintableSignature {

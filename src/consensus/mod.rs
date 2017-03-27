@@ -15,18 +15,29 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
+//! Distributed consensus, based on Raft, Tangaroa and PBFT: allows a cluster of partially-trusted
+//! nodes to agree on an ordered sequence of events with a reasonable degree of assurance that
+//! committed events will remain, in order, in the cluster's agreed log of events.
+
 // TODO: remove this when code is used
 #![allow(unused)]
 
 // TODO: can can we allow this globally? Pretty please?
 #![allow(unused_results)]
 
-pub mod record;
-pub mod message;
-pub mod state;
-pub mod consensus_state;
-mod interface;
+// Implementation of `ConsensusState` type, which stores all state needed for nodes to handle
+// consensus.
+mod consensus_state;
+
+// Implements the various record / log entries, and the record / log type.
+mod record;
+
+// Node state with regards to elections: leader, candidate or follower.
+mod state;
+
 mod error;
+mod interface;
+mod message;
 mod printable;
 
 #[cfg(test)]
@@ -41,5 +52,8 @@ use rustc_serialize::Encodable;
 use std::fmt::Debug;
 use std::hash::Hash;
 
+/// Internal peer identifier
 pub trait PeerId: Copy + Ord + Encodable + Debug + Hash {}
+
+/// Internal timer token type
 pub type TimerToken = u64;
