@@ -15,17 +15,16 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use consensus::{ConsensusState, NetworkInterface, PeerId};
+use consensus::{ConsensusState, NetworkInterface};
 use consensus::message::Message;
 use consensus::mock::Timers;
 use consensus::record::{Entry, RecordEntry};
+use crust::PeerId;
 use rand;
 use rand::distributions::{IndependentSample, Range};
 use rust_sodium::crypto::sign;
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
-
-impl PeerId for usize {}
 
 #[derive(Clone, PartialEq, Eq, RustcEncodable, Hash)]
 pub enum TestEntry {
@@ -34,9 +33,9 @@ pub enum TestEntry {
 impl Entry for TestEntry {}
 
 pub struct Cluster {
-    nodes: Vec<ConsensusState<usize, TestEntry>>,
+    nodes: Vec<ConsensusState<TestEntry>>,
     timers: Timers,
-    msg_queue: VecDeque<Message<usize, TestEntry>>,
+    msg_queue: VecDeque<Message<TestEntry>>,
     randomize_msgs: bool,
     rng: rand::ThreadRng,
 }
@@ -49,11 +48,11 @@ impl Cluster {
         for i in 0..num_nodes {
             let (pub_key, priv_key) = sign::gen_keypair();
             secret_keys.push(priv_key);
-            cluster_keys.insert(i, pub_key);
+            cluster_keys.insert(PeerId(i), pub_key);
         }
         let mut cluster = Vec::new();
         for (i, secret_key) in secret_keys.into_iter().enumerate() {
-            let node = ConsensusState::new(i,
+            let node = ConsensusState::new(PeerId(i),
                                            secret_key,
                                            cluster_keys.clone(),
                                            &mut timers.get_timer_for(i));
@@ -77,7 +76,7 @@ impl Cluster {
             } else {
                 old_queue.pop_front().unwrap()
             };
-            let dst = msg.dst;
+            let dst = msg.dst.0;
             let _ = self.nodes[dst].handle_message(msg,
                                                    &mut self.msg_queue,
                                                    &mut self.timers.get_timer_for(dst));
@@ -105,14 +104,14 @@ impl Cluster {
         while !self.tick() {}
     }
 
-    pub fn propose_entry(&mut self, name: usize, entry: RecordEntry<usize, TestEntry>) {
+    pub fn propose_entry(&mut self, name: usize, entry: RecordEntry<TestEntry>) {
         let _ = self.nodes[name].propose_entry(&mut self.msg_queue, entry);
     }
 }
 
-impl<E: Entry> NetworkInterface<usize, E> for VecDeque<Message<usize, E>> {
-    fn send_message(&mut self, msg: Message<usize, E>) {
-        trace!("{} sends {:?} to {}", msg.src, msg.content, msg.dst);
+impl<E: Entry> NetworkInterface<E> for VecDeque<Message<E>> {
+    fn send_message(&mut self, msg: Message<E>) {
+        trace!("{:?} sends {:?} to {:?}", msg.src, msg.content, msg.dst);
         self.push_back(msg);
     }
 }

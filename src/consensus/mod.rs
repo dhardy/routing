@@ -40,7 +40,7 @@ mod interface;
 mod message;
 mod printable;
 
-#[cfg(test)]
+#[cfg(all(test,feature = "use-mock-crust"))]
 mod mock;
 
 pub use self::consensus_state::ConsensusState;
