@@ -17,14 +17,17 @@
 
 use consensus::{ConsensusState, NetworkInterface};
 use consensus::message::Message;
-use consensus::mock::Timers;
 use consensus::record::{Entry, RecordEntry};
 use crust::PeerId;
+use maidsafe_utilities::event_sender::MaidSafeEventCategory;
 use rand;
 use rand::distributions::{IndependentSample, Range};
 use rust_sodium::crypto::sign;
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
+use std::sync::mpsc;
+use timer::Timer;
+use types::RoutingActionSender;
 
 #[derive(Clone, PartialEq, Eq, RustcEncodable, Hash)]
 pub enum TestEntry {
@@ -34,7 +37,7 @@ impl Entry for TestEntry {}
 
 pub struct Cluster {
     nodes: Vec<ConsensusState<TestEntry>>,
-    timers: Timers,
+    timer: Timer,
     msg_queue: VecDeque<Message<TestEntry>>,
     randomize_msgs: bool,
     rng: rand::ThreadRng,
@@ -44,7 +47,14 @@ impl Cluster {
     pub fn new(num_nodes: usize, randomize_msgs: bool) -> Cluster {
         let mut secret_keys = vec![];
         let mut cluster_keys = BTreeMap::new();
-        let mut timers = Timers::new();
+
+        let (action_sender, _) = mpsc::channel();
+        let (category_sender, _) = mpsc::channel();
+        let routing_event_category = MaidSafeEventCategory::Routing;
+        let sender = RoutingActionSender::new(action_sender,
+                                              routing_event_category,
+                                              category_sender.clone());
+        let mut timer = Timer::new(sender);
         for i in 0..num_nodes {
             let (pub_key, priv_key) = sign::gen_keypair();
             secret_keys.push(priv_key);
@@ -52,15 +62,13 @@ impl Cluster {
         }
         let mut cluster = Vec::new();
         for (i, secret_key) in secret_keys.into_iter().enumerate() {
-            let node = ConsensusState::new(PeerId(i),
-                                           secret_key,
-                                           cluster_keys.clone(),
-                                           &mut timers.get_timer_for(i));
+            let node =
+                ConsensusState::new(PeerId(i), secret_key, cluster_keys.clone(), timer.clone());
             cluster.push(node);
         }
         Cluster {
             nodes: cluster,
-            timers: timers,
+            timer: timer,
             msg_queue: VecDeque::new(),
             randomize_msgs: randomize_msgs,
             rng: rand::thread_rng(),
@@ -77,9 +85,7 @@ impl Cluster {
                 old_queue.pop_front().unwrap()
             };
             let dst = msg.dst.0;
-            let _ = self.nodes[dst].handle_message(msg,
-                                                   &mut self.msg_queue,
-                                                   &mut self.timers.get_timer_for(dst));
+            let _ = self.nodes[dst].handle_message(msg, &mut self.msg_queue);
         }
     }
 
@@ -89,19 +95,13 @@ impl Cluster {
         }
     }
 
-    pub fn tick(&mut self) -> bool {
-        let timeouts = self.timers.tick();
-        let result = !timeouts.is_empty();
-        for (name, token) in timeouts {
-            self.nodes[name].handle_timeout(token,
-                                            &mut self.msg_queue,
-                                            &mut self.timers.get_timer_for(name));
+    pub fn handle_timeouts(&mut self) {
+        while let Some(token) = self.timer.get_next() {
+            // We don't know which node this is for, but it will be unique. Send to all for test.
+            for ref mut node in &mut self.nodes {
+                node.handle_timeout(token, &mut self.msg_queue);
+            }
         }
-        result
-    }
-
-    pub fn tick_until_timeout(&mut self) {
-        while !self.tick() {}
     }
 
     pub fn propose_entry(&mut self, name: usize, entry: RecordEntry<TestEntry>) {
@@ -161,7 +161,7 @@ mod test {
         let _ = maidsafe_utilities::log::init(false);
         let mut cluster = Cluster::new(8, true);
         for _ in 0..10 {
-            cluster.tick_until_timeout();
+            cluster.handle_timeouts();
             cluster.deliver_msgs_until_empty();
             print_cluster_states(&cluster);
         }
@@ -169,7 +169,7 @@ mod test {
             cluster.propose_entry(i, RecordEntry::Regular(TestEntry::Test));
         }
         for _ in 0..10 {
-            cluster.tick_until_timeout();
+            cluster.handle_timeouts();
             cluster.deliver_msgs_until_empty();
             print_cluster_states(&cluster);
         }

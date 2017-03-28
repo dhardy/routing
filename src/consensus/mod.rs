@@ -45,7 +45,7 @@ mod mock;
 
 pub use self::consensus_state::ConsensusState;
 pub use self::error::Error;
-pub use self::interface::{NetworkInterface, Scheduler};
+pub use self::interface::NetworkInterface;
 pub use self::printable::{PrintableDigest, PrintableSignature};
 
 use rustc_serialize::Encodable;

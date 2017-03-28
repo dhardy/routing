@@ -16,7 +16,5 @@
 // relating to use of the SAFE Network Software.
 
 mod cluster;
-mod timer;
 
 pub use self::cluster::Cluster;
-pub use self::timer::Timers;

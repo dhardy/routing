@@ -42,6 +42,12 @@ pub enum State {
     },
 }
 
+pub enum TokenMatch {
+    Election,
+    Heartbeat,
+    None,
+}
+
 impl State {
     /// Returns whether the state is `Follower`.
     pub fn is_follower(&self) -> bool {
@@ -88,15 +94,6 @@ impl State {
         }
     }
 
-    /// Returns the token for the timer controlling heartbeats.
-    pub fn heartbeat_token(&self) -> Option<TimerToken> {
-        if let State::Leader { heartbeat_token, .. } = *self {
-            Some(heartbeat_token)
-        } else {
-            None
-        }
-    }
-
     /// Returns a mutable reference to the token for the timer controlling heartbeats.
     pub fn heartbeat_token_mut(&mut self) -> Option<&mut TimerToken> {
         if let State::Leader { ref mut heartbeat_token, .. } = *self {
@@ -106,21 +103,33 @@ impl State {
         }
     }
 
-    /// Returns the token for the timer controlling elections.
-    pub fn election_token(&self) -> Option<TimerToken> {
-        match *self {
-            State::Follower { election_token, .. } |
-            State::Candidate { election_token, .. } => Some(election_token),
-            _ => None,
-        }
-    }
-
     /// Returns a mutable reference to the token for the timer controlling elections.
     pub fn election_token_mut(&mut self) -> Option<&mut TimerToken> {
         match *self {
             State::Follower { ref mut election_token, .. } |
             State::Candidate { ref mut election_token, .. } => Some(election_token),
             _ => None,
+        }
+    }
+
+    /// Checks whether the given token matches any in our state.
+    pub fn check_token(&self, token: TimerToken) -> TokenMatch {
+        match *self {
+            State::Follower { election_token, .. } |
+            State::Candidate { election_token, .. } => {
+                if token == election_token {
+                    TokenMatch::Election
+                } else {
+                    TokenMatch::None
+                }
+            }
+            State::Leader { heartbeat_token, .. } => {
+                if token == heartbeat_token {
+                    TokenMatch::Heartbeat
+                } else {
+                    TokenMatch::None
+                }
+            }
         }
     }
 

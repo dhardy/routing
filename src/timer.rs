@@ -218,7 +218,8 @@ mod implementation {
 
     struct Inner {
         next_token: u64,
-        time: Instant,
+        start: Instant,
+        now: Instant,
         scheduled: BTreeMap<Instant, Vec<u64>>,
     }
 
@@ -233,9 +234,12 @@ mod implementation {
     impl Timer {
         /// Create a new instance. Can be cloned (all clones share the same internal state).
         pub fn new(_: RoutingActionSender) -> Self {
+            // I would like to use 0, but Instant won't allow me to create it that way.
+            let start = Instant::now();
             let inner = Inner {
                 next_token: 0,
-                time: Instant::now(),
+                start: start,
+                now: start,
                 scheduled: Default::default(),
             };
             Timer { inner: Rc::new(RefCell::new(inner)) }
@@ -249,7 +253,7 @@ mod implementation {
             let token = inner.next_token;
             inner.next_token = token.wrapping_add(1);
 
-            let time = inner.time + duration;
+            let time = inner.now + duration;
             match inner.scheduled.entry(time) {
                 Entry::Occupied(mut entry) => entry.get_mut().push(token),
                 Entry::Vacant(entry) => {
@@ -257,13 +261,16 @@ mod implementation {
                 }
             };
 
-            inner.time = inner.time + Duration::from_millis(1);
+            let tdiff = time - inner.start;
+            let tfrac = tdiff.as_secs() as f64 + tdiff.subsec_nanos() as f64 * 1.0e-9;
+            trace!("Timer: scheduled token {} at time {:.3}", token, tfrac);
+
+            inner.now = inner.now + Duration::from_millis(1);
 
             token
         }
 
         /// Get the next pending timeout, if any.
-        #[allow(unused)] // TODO use
         pub fn get_next(&mut self) -> Option<u64> {
             let mut inner = self.inner.borrow_mut();
 
@@ -275,8 +282,12 @@ mod implementation {
                 None => return None,
             };
 
-            if time > inner.time {
-                inner.time = time;
+            let tdiff = time - inner.start;
+            let tfrac = tdiff.as_secs() as f64 + tdiff.subsec_nanos() as f64 * 1.0e-9;
+            trace!("Timer: got token {} at time {:.3}", token, tfrac);
+
+            if time > inner.now {
+                inner.now = time;
             }
             if remove {
                 let _old = inner.scheduled.remove(&time);

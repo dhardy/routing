@@ -15,7 +15,6 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::TimerToken;
 use super::message::Message;
 use super::record::Entry;
 
@@ -23,11 +22,4 @@ use super::record::Entry;
 pub trait NetworkInterface<E: Entry> {
     /// Send a message
     fn send_message(&mut self, msg: Message<E>);
-}
-
-/// Allows creation of timer tokens
-pub trait Scheduler {
-    /// Schedule a call to `ConsensusState::handle_timeout` after the elapsed `seconds` with a new
-    /// `TimerToken`.
-    fn schedule(&mut self, seconds: u64) -> TimerToken;
 }
