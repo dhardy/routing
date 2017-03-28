@@ -15,8 +15,8 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::PeerId;
 use super::consensus_state::Cluster;
+use crust::PeerId;
 use maidsafe_utilities::serialisation;
 use rust_sodium::crypto::{hash, sign};
 use rust_sodium::crypto::hash::sha256::Digest;
@@ -31,30 +31,30 @@ pub trait Entry: Encodable + Clone + PartialEq + Eq + Hash {}
 /// An enum representing possible configuration (membership) changes - these have to be handled
 /// separately
 #[derive(Clone, RustcEncodable, PartialEq, Eq, Hash)]
-pub enum ConfigurationEntry<T: PeerId> {
-    NodeAdded(T, sign::PublicKey),
-    NodeRemoved(T, sign::PublicKey),
-    ClusterMerge(Cluster<T>),
-    ClusterSplit(Cluster<T>),
+pub enum ConfigurationEntry {
+    NodeAdded(PeerId, sign::PublicKey),
+    NodeRemoved(PeerId, sign::PublicKey),
+    ClusterMerge(Cluster),
+    ClusterSplit(Cluster),
 }
 
 /// A record entry type - can be either of regular entry (of type defined by the application) or a
 /// configuration change entry
 #[derive(Clone, RustcEncodable, PartialEq, Eq, Hash)]
-pub enum RecordEntry<T: PeerId, E: Entry> {
+pub enum RecordEntry<E: Entry> {
     Regular(E),
-    Config(ConfigurationEntry<T>),
+    Config(ConfigurationEntry),
 }
 
 /// A "locked" record entry is an entry that has a validatable history - it can be validated by
 /// checking the hashes of the previous entries
 #[derive(Clone, RustcEncodable)]
-pub struct LockedRecordEntry<T: PeerId, E: Entry> {
-    pub entry: RecordEntry<T, E>,
+pub struct LockedRecordEntry<E: Entry> {
+    pub entry: RecordEntry<E>,
     pub parent_hash: Digest,
 }
 
-impl<T: PeerId, E: Entry> LockedRecordEntry<T, E> {
+impl<E: Entry> LockedRecordEntry<E> {
     /// Calculate the hash of the entry
     pub fn hash(&self) -> Digest {
         let bytes = serialisation::serialise(self)
@@ -80,9 +80,9 @@ impl<T: PeerId, E: Entry> LockedRecordEntry<T, E> {
     }
 
     /// Create a new entry to be inserted after a given one
-    pub fn new_after_entry(entry: RecordEntry<T, E>,
-                           parent: &LockedRecordEntry<T, E>)
-                           -> LockedRecordEntry<T, E> {
+    pub fn new_after_entry(entry: RecordEntry<E>,
+                           parent: &LockedRecordEntry<E>)
+                           -> LockedRecordEntry<E> {
         LockedRecordEntry {
             entry: entry,
             parent_hash: parent.hash(),
@@ -90,7 +90,7 @@ impl<T: PeerId, E: Entry> LockedRecordEntry<T, E> {
     }
 
     /// Create a new entry with a given hash of the previous entry
-    pub fn new_after_hash(entry: RecordEntry<T, E>, parent: Digest) -> LockedRecordEntry<T, E> {
+    pub fn new_after_hash(entry: RecordEntry<E>, parent: Digest) -> LockedRecordEntry<E> {
         LockedRecordEntry {
             entry: entry,
             parent_hash: parent,
@@ -100,15 +100,15 @@ impl<T: PeerId, E: Entry> LockedRecordEntry<T, E> {
 
 /// Type representing a locked entry that is signed by the members of the cluster
 #[derive(Clone, RustcEncodable)]
-pub struct SignedRecordEntry<T: PeerId, E: Entry> {
-    pub entry: LockedRecordEntry<T, E>,
-    pub signatures: BTreeMap<T, sign::Signature>,
+pub struct SignedRecordEntry<E: Entry> {
+    pub entry: LockedRecordEntry<E>,
+    pub signatures: BTreeMap<PeerId, sign::Signature>,
 }
 
-impl<T: PeerId, E: Entry> SignedRecordEntry<T, E> {
+impl<E: Entry> SignedRecordEntry<E> {
     /// Returns the number of signatures that are valid with respect to the given cluster members
     /// list.
-    pub fn valid_sig_count(&self, cluster: &Cluster<T>) -> usize {
+    pub fn valid_sig_count(&self, cluster: &Cluster) -> usize {
         self.signatures
             .iter()
             .filter(|&(name, sig)| {
@@ -120,14 +120,14 @@ impl<T: PeerId, E: Entry> SignedRecordEntry<T, E> {
     }
 
     /// Signs the entry with a given key and returns the signature.
-    pub fn sign(&mut self, peer_id: T, peer_key: &sign::SecretKey) -> sign::Signature {
+    pub fn sign(&mut self, peer_id: PeerId, peer_key: &sign::SecretKey) -> sign::Signature {
         let sig = self.entry.signature(peer_key);
         self.signatures.insert(peer_id, sig);
         sig
     }
 
     /// Adds the signature by the given peer.
-    pub fn add_signature(&mut self, peer_id: T, sig: sign::Signature) {
+    pub fn add_signature(&mut self, peer_id: PeerId, sig: sign::Signature) {
         self.signatures.insert(peer_id, sig);
     }
 }
@@ -135,17 +135,17 @@ impl<T: PeerId, E: Entry> SignedRecordEntry<T, E> {
 /// The record struct - it contains a list of signed record entries, as well as information
 /// regarding the entries preceding the ones contained in it and which entries are considered
 /// committed - accepted by a quorum of members, and therefore immutable in the future.
-pub struct Record<T: PeerId, E: Entry> {
+pub struct Record<E: Entry> {
     start_hash: Digest,
     last_hash: Digest,
-    record: HashMap<Digest, SignedRecordEntry<T, E>>,
+    record: HashMap<Digest, SignedRecordEntry<E>>,
     entry_indices: HashMap<Digest, usize>,
     last_committed: Digest,
 }
 
-impl<T: PeerId, E: Entry> Record<T, E> {
+impl<E: Entry> Record<E> {
     /// Creates a new record starting at index 0.
-    pub fn new() -> Record<T, E> {
+    pub fn new() -> Record<E> {
         let mut initial_indices = HashMap::new();
         initial_indices.insert(Digest([0; 32]), 0);
         Record {
@@ -158,7 +158,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     }
 
     /// Creates a record starting at a given index, with a given starting hash.
-    pub fn new_with_offset(start_hash: Digest) -> Record<T, E> {
+    pub fn new_with_offset(start_hash: Digest) -> Record<E> {
         let mut initial_indices = HashMap::new();
         initial_indices.insert(start_hash, 0);
         Record {
@@ -171,7 +171,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     }
 
     /// Returns a reference to the record entry at the given index (if we have it in our record).
-    pub fn get(&self, hash: &Digest) -> Option<&SignedRecordEntry<T, E>> {
+    pub fn get(&self, hash: &Digest) -> Option<&SignedRecordEntry<E>> {
         self.record.get(hash)
     }
 
@@ -183,7 +183,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
 
     /// Returns a  mutable reference to the record entry at the given index (if we have it in our
     /// record).
-    pub fn get_mut(&mut self, hash: &Digest) -> Option<&mut SignedRecordEntry<T, E>> {
+    pub fn get_mut(&mut self, hash: &Digest) -> Option<&mut SignedRecordEntry<E>> {
         self.record.get_mut(hash)
     }
 
@@ -203,12 +203,12 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     }
 
     /// Returns an iterator over the entries in range (start,end].
-    pub fn range(&self, start: &Digest, end: &Digest) -> Rev<IntoIter<&SignedRecordEntry<T, E>>> {
+    pub fn range(&self, start: &Digest, end: &Digest) -> Rev<IntoIter<&SignedRecordEntry<E>>> {
         self.rev_range(start, end).rev()
     }
 
     /// Returns an iterator over the reversed range of entries: [end, start)
-    pub fn rev_range(&self, start: &Digest, end: &Digest) -> IntoIter<&SignedRecordEntry<T, E>> {
+    pub fn rev_range(&self, start: &Digest, end: &Digest) -> IntoIter<&SignedRecordEntry<E>> {
         if (!self.record.contains_key(start) && self.start_hash != *start) ||
            !self.record.contains_key(end) {
             Vec::new().into_iter()
@@ -225,7 +225,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     }
 
     /// Returns the entries from the record beginning at the given index as a vec of references.
-    pub fn entries_since(&self, start: &Digest) -> Vec<&SignedRecordEntry<T, E>> {
+    pub fn entries_since(&self, start: &Digest) -> Vec<&SignedRecordEntry<E>> {
         self.range(start, &self.last_hash).collect()
     }
 
@@ -235,7 +235,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     }
 
     /// Appends the given entry to the end of the record.
-    pub fn append_entry(&mut self, entry: RecordEntry<T, E>) -> Digest {
+    pub fn append_entry(&mut self, entry: RecordEntry<E>) -> Digest {
         let locked = LockedRecordEntry::new_after_hash(entry, self.last_hash());
         let hash = locked.hash();
         let signed = SignedRecordEntry {
@@ -266,7 +266,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     /// diverge, the old entries since the divergence point get deleted.
     /// The function returns without doing anything if the chain of hashes of the new entries is
     /// invalid or if the update would result in removal of a committed entry.
-    pub fn update_entries(&mut self, start: &Digest, entries: Vec<SignedRecordEntry<T, E>>) {
+    pub fn update_entries(&mut self, start: &Digest, entries: Vec<SignedRecordEntry<E>>) {
         // first, validate the chain of hashes
         let mut cur_hash = *start;
         for entry in entries.iter() {
@@ -324,7 +324,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     /// Adds a signature to the entry at the given index.
     pub fn add_signature(&mut self,
                          hash: &Digest,
-                         peer_id: T,
+                         peer_id: PeerId,
                          signature: sign::Signature)
                          -> usize {
         if let Some(entry) = self.get_mut(hash) {
@@ -338,7 +338,7 @@ impl<T: PeerId, E: Entry> Record<T, E> {
     /// Signs an entry at the given index with `peer_key` and returns the signature if successful
     pub fn sign(&mut self,
                 hash: &Digest,
-                peer_id: T,
+                peer_id: PeerId,
                 peer_key: &sign::SecretKey)
                 -> Option<sign::Signature> {
         if let Some(entry) = self.get_mut(hash) {

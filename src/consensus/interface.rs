@@ -15,14 +15,14 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::{PeerId, TimerToken};
+use super::TimerToken;
 use super::message::Message;
 use super::record::Entry;
 
 /// Allows sending of messages
-pub trait NetworkInterface<T: PeerId, E: Entry> {
+pub trait NetworkInterface<E: Entry> {
     /// Send a message
-    fn send_message(&mut self, msg: Message<T, E>);
+    fn send_message(&mut self, msg: Message<E>);
 }
 
 /// Allows creation of timer tokens

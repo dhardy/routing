@@ -52,8 +52,5 @@ use rustc_serialize::Encodable;
 use std::fmt::Debug;
 use std::hash::Hash;
 
-/// Internal peer identifier
-pub trait PeerId: Copy + Ord + Encodable + Debug + Hash {}
-
 /// Internal timer token type
 pub type TimerToken = u64;

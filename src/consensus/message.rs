@@ -15,37 +15,38 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::{PeerId, PrintableDigest, PrintableSignature};
+use super::{PrintableDigest, PrintableSignature};
 use super::record::{Entry, SignedRecordEntry};
 use super::state::Votes;
+use crust::PeerId;
 use maidsafe_utilities::serialisation;
 use rust_sodium::crypto::hash::sha256::Digest;
 use rust_sodium::crypto::sign;
 use std::fmt;
 
 /// Encapsulation of message sender, recipient, content and signature.
-pub struct Message<T: PeerId, E: Entry> {
-    pub src: T,
-    pub dst: T,
-    pub content: Content<T, E>,
+pub struct Message<E: Entry> {
+    pub src: PeerId,
+    pub dst: PeerId,
+    pub content: Content<E>,
     pub signature: sign::Signature,
 }
 
 /// Content of messages sent between nodes.
 #[derive(Clone, RustcEncodable)]
-pub enum Content<T: PeerId, E: Entry> {
-    AppendEntries(AppendEntries<T, E>),
+pub enum Content<E: Entry> {
+    AppendEntries(AppendEntries<E>),
     AppendEntriesResponse(AppendEntriesResponse),
-    RequestVote(RequestVote<T, E>),
+    RequestVote(RequestVote<E>),
     VoteResponse {
-        response: VoteResponse<T>,
+        response: VoteResponse,
         response_sig: sign::Signature,
     },
     // TODO: add fields 'event: LogEntry' and 'signature'
-    DoubtLeader { term: u64, leader_name: T },
+    DoubtLeader { term: u64, leader_name: PeerId },
 }
 
-impl<T: PeerId, E: Entry> Content<T, E> {
+impl<E: Entry> Content<E> {
     /// Signs the message content with a given key.
     pub fn signature(&self, key: &sign::SecretKey) -> sign::Signature {
         let bytes = serialisation::serialise(self)
@@ -63,7 +64,7 @@ impl<T: PeerId, E: Entry> Content<T, E> {
     }
 }
 
-impl<T: PeerId, E: Entry> fmt::Debug for Content<T, E> {
+impl<E: Entry> fmt::Debug for Content<E> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Content::AppendEntries(ref ae) => {
@@ -99,11 +100,11 @@ impl<T: PeerId, E: Entry> fmt::Debug for Content<T, E> {
 }
 
 #[derive(Clone, RustcEncodable)]
-pub struct AppendEntries<T: PeerId, E: Entry> {
+pub struct AppendEntries<E: Entry> {
     pub term: u64,
     pub prev_log_hash: Digest,
-    pub entries: Vec<SignedRecordEntry<T, E>>,
-    pub votes: Votes<T>,
+    pub entries: Vec<SignedRecordEntry<E>>,
+    pub votes: Votes,
 }
 
 #[derive(Clone, Copy, RustcEncodable)]
@@ -135,11 +136,11 @@ impl fmt::Debug for AppendEntriesResponse {
 }
 
 #[derive(Clone, RustcEncodable)]
-pub struct RequestVote<T: PeerId, E: Entry> {
+pub struct RequestVote<E: Entry> {
     pub term: u64,
-    pub candidate_name: T,
+    pub candidate_name: PeerId,
     pub last_committed_hash: Digest,
-    pub committed_entries: Vec<SignedRecordEntry<T, E>>,
+    pub committed_entries: Vec<SignedRecordEntry<E>>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, RustcEncodable, Clone, Copy, Debug)]
@@ -150,13 +151,13 @@ pub enum VoteResponseEnum {
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, RustcEncodable, Clone, Copy)]
-pub struct VoteResponse<T: PeerId> {
+pub struct VoteResponse {
     pub term: u64,
-    pub candidate: T,
+    pub candidate: PeerId,
     pub vote_granted: VoteResponseEnum,
 }
 
-impl<T: PeerId> VoteResponse<T> {
+impl VoteResponse {
     /// Generates a signature for a `VoteResponse` - needed during elections.
     pub fn sign(&self, key: &sign::SecretKey) -> sign::Signature {
         let bytes = serialisation::serialise(self)

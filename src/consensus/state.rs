@@ -15,33 +15,34 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::{PeerId, TimerToken};
+use super::TimerToken;
 use super::message::VoteResponse;
+use crust::PeerId;
 use rust_sodium::crypto::hash::sha256::Digest;
 use rust_sodium::crypto::sign;
 use std::collections::{BTreeMap, HashMap};
 
-pub type Votes<T> = BTreeMap<T, (VoteResponse<T>, sign::Signature)>;
+pub type Votes = BTreeMap<PeerId, (VoteResponse, sign::Signature)>;
 
-pub enum State<T: PeerId> {
+pub enum State {
     Follower {
         election_token: TimerToken,
-        current_leader: Option<T>,
+        current_leader: Option<PeerId>,
     },
     Candidate {
-        votes: Votes<T>,
+        votes: Votes,
         election_token: TimerToken,
     },
     Leader {
         // index of the next log entry to be sent to each node (initialized to our last index + 1)
-        last_hash: HashMap<T, Digest>,
+        last_hash: HashMap<PeerId, Digest>,
         // used to prove leadership
-        votes: Votes<T>,
+        votes: Votes,
         heartbeat_token: TimerToken,
     },
 }
 
-impl<T: PeerId> State<T> {
+impl State {
     /// Returns whether the state is `Follower`.
     pub fn is_follower(&self) -> bool {
         if let State::Follower { .. } = *self {
@@ -70,7 +71,7 @@ impl<T: PeerId> State<T> {
     }
 
     /// Returns the stored votes for us (if existing).
-    pub fn votes(&self) -> Option<&Votes<T>> {
+    pub fn votes(&self) -> Option<&Votes> {
         match *self {
             State::Candidate { ref votes, .. } |
             State::Leader { ref votes, .. } => Some(votes),
@@ -79,7 +80,7 @@ impl<T: PeerId> State<T> {
     }
 
     /// Returns a mutable reference to the set of stored votes (if existing).
-    pub fn votes_mut(&mut self) -> Option<&mut Votes<T>> {
+    pub fn votes_mut(&mut self) -> Option<&mut Votes> {
         match *self {
             State::Candidate { ref mut votes, .. } |
             State::Leader { ref mut votes, .. } => Some(votes),
@@ -124,7 +125,7 @@ impl<T: PeerId> State<T> {
     }
 
     /// Returns the name of the current leader.
-    pub fn current_leader(&self) -> Option<T> {
+    pub fn current_leader(&self) -> Option<PeerId> {
         if let State::Follower { current_leader, .. } = *self {
             current_leader
         } else {
@@ -133,7 +134,7 @@ impl<T: PeerId> State<T> {
     }
 
     /// Returns a mutable reference to the name of the current leader.
-    pub fn current_leader_mut(&mut self) -> Option<&mut Option<T>> {
+    pub fn current_leader_mut(&mut self) -> Option<&mut Option<PeerId>> {
         if let State::Follower { ref mut current_leader, .. } = *self {
             Some(current_leader)
         } else {

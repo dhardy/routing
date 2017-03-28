@@ -15,13 +15,14 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use super::{PeerId, TimerToken};
+use super::TimerToken;
 use super::error::Error;
 use super::interface::{NetworkInterface, Scheduler};
 use super::message::{AppendEntries, AppendEntriesResponse, Content, Message, RequestVote,
                      VoteResponse, VoteResponseEnum};
 use super::record::{ConfigurationEntry, Entry, Record, RecordEntry, SignedRecordEntry};
 use super::state::{State, Votes};
+use crust::PeerId;
 use rand;
 use rand::distributions::{IndependentSample, Range};
 use rust_sodium::crypto::hash::sha256::Digest;
@@ -34,37 +35,37 @@ const MAX_HEARTBEAT_RANGE: u64 = 45;
 const HEARTBEAT_PERIOD: u64 = 20;
 const VOTE_HIGH_WATERMARK: u64 = 10;
 
-pub type Cluster<T> = BTreeMap<T, sign::PublicKey>;
+pub type Cluster = BTreeMap<PeerId, sign::PublicKey>;
 pub type Result<T> = ::std::result::Result<T, Error>;
-pub type ConsensusResult<T, E> = Result<Vec<RecordEntry<T, E>>>;
+pub type ConsensusResult<E> = Result<Vec<RecordEntry<E>>>;
 
 /// The structure containing all information relevant to the handling of the consensus.
-pub struct ConsensusState<T: PeerId, E: Entry> {
-    our_id: T,
+pub struct ConsensusState<E: Entry> {
+    our_id: PeerId,
     our_key: sign::SecretKey,
     current_term: u64,
     // record who to vote for and term in case of an election timeout
-    lazy_vote: Option<(u64, T)>,
-    voted_for: Option<T>,
-    record: Record<T, E>,
-    pending_entries: HashSet<RecordEntry<T, E>>,
+    lazy_vote: Option<(u64, PeerId)>,
+    voted_for: Option<PeerId>,
+    record: Record<E>,
+    pending_entries: HashSet<RecordEntry<E>>,
     unsigned_entries: HashSet<Digest>,
     last_applied: Digest,
-    state: State<T>,
-    cluster: Cluster<T>,
+    state: State,
+    cluster: Cluster,
 }
 
-impl<T: PeerId, E: Entry> ConsensusState<T, E> {
+impl<E: Entry> ConsensusState<E> {
     /// Method creating a new struct containing the state of the consensus algorithm in our node.
     /// `our_id` is the peer ID of this node, `our_key` is it's secret signing key. The `cluster`
     /// parameter should contain all the names currently in our cluster, along with their public
     /// keys for verification of the signatures. The `sched` parameter is necessary to schedule an
     /// initial heartbeat timeout.
-    pub fn new<S: Scheduler>(our_id: T,
+    pub fn new<S: Scheduler>(our_id: PeerId,
                              our_key: sign::SecretKey,
-                             cluster: Cluster<T>,
+                             cluster: Cluster,
                              sched: &mut S)
-                             -> ConsensusState<T, E> {
+                             -> ConsensusState<E> {
         ConsensusState {
             our_id: our_id,
             our_key: our_key,
@@ -87,11 +88,11 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// crate should be passed here along with an object that will allow for sending responses (in
     /// the `net` parameter).
     /// Returns a Vec of new record entries to be applied to the state machine.
-    pub fn handle_message<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                   message: Message<T, E>,
-                                                                   net: &mut I,
-                                                                   sched: &mut S)
-                                                                   -> ConsensusResult<T, E> {
+    pub fn handle_message<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                message: Message<E>,
+                                                                net: &mut I,
+                                                                sched: &mut S)
+                                                                -> ConsensusResult<E> {
         let Message {
             src,
             dst,
@@ -138,10 +139,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// themselves will be received by the client of the crate and should be passed to this method.
     /// `net` and `sched` parameters allow for sending responses and scheduling further timeout
     /// events, respectively.
-    pub fn handle_timeout<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                   token: TimerToken,
-                                                                   net: &mut I,
-                                                                   sched: &mut S) {
+    pub fn handle_timeout<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                token: TimerToken,
+                                                                net: &mut I,
+                                                                sched: &mut S) {
         match token {
             t if Some(t) == self.state.election_token() => {
                 info!("Node({:?}): Timed out on election.", self.our_id);
@@ -163,10 +164,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// If we are the leader, appends the entry to the record and broadcasts `AppendEntries`.
     /// Otherwise, adds it to `pending_entries` and signs and optionally commits any corresponding
     /// entries.
-    pub fn propose_entry<I: NetworkInterface<T, E>>(&mut self,
-                                                    net: &mut I,
-                                                    entry: RecordEntry<T, E>)
-                                                    -> ConsensusResult<T, E> {
+    pub fn propose_entry<I: NetworkInterface<E>>(&mut self,
+                                                 net: &mut I,
+                                                 entry: RecordEntry<E>)
+                                                 -> ConsensusResult<E> {
         if self.state.is_leader() {
             let hash = self.record.append_entry(entry);
             self.record.sign(&hash, self.our_id, &self.our_key);
@@ -182,7 +183,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Modifies `cluster` according to the given entry.
-    fn apply_entry(cluster: &mut Cluster<T>, entry: &ConfigurationEntry<T>) {
+    fn apply_entry(cluster: &mut Cluster, entry: &ConfigurationEntry) {
         match *entry {
             ConfigurationEntry::NodeAdded(name, key) => {
                 cluster.insert(name, key);
@@ -203,7 +204,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Reverses the modification of `cluster` according to the given entry.
-    fn unapply_entry(cluster: &mut Cluster<T>, entry: &ConfigurationEntry<T>) {
+    fn unapply_entry(cluster: &mut Cluster, entry: &ConfigurationEntry) {
         match *entry {
             ConfigurationEntry::NodeAdded(name, _) => {
                 cluster.remove(&name);
@@ -224,7 +225,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Returns the cluster members list as it was at the record entry identified by `hash`.
-    fn cluster_at_hash(&self, hash: Digest) -> Cluster<T> {
+    fn cluster_at_hash(&self, hash: Digest) -> Cluster {
         let mut cluster = self.cluster.clone();
         let index = if let Some(index) = self.record.get_index(&hash) {
             index
@@ -261,7 +262,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Validates whether given entries could be cleanly and correctly appended after the entry
     /// identified by `start_hash`.
-    fn validate_entries(&self, start_hash: Digest, entries: &[SignedRecordEntry<T, E>]) -> bool {
+    fn validate_entries(&self, start_hash: Digest, entries: &[SignedRecordEntry<E>]) -> bool {
         let mut current_hash = start_hash;
         for signed_entry in entries.iter() {
             // check whether the parent hash is correct
@@ -275,7 +276,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Validates whether the entries presented form a valid chain and have a quorum of signatures
     /// each
-    fn validate_committed(&self, start_hash: Digest, entries: &[SignedRecordEntry<T, E>]) -> bool {
+    fn validate_committed(&self, start_hash: Digest, entries: &[SignedRecordEntry<E>]) -> bool {
         let mut current_hash = start_hash;
         let mut cluster = self.cluster_at_hash(current_hash);
         for signed_entry in entries.iter() {
@@ -299,10 +300,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Verifies whether the candidate requesting our vote has all committed entries that we have.
     /// Requests additional information when it can't be verified.
-    fn verify_log_prefix<I: NetworkInterface<T, E>>(&self,
-                                                    net: &mut I,
-                                                    req: &RequestVote<T, E>)
-                                                    -> bool {
+    fn verify_log_prefix<I: NetworkInterface<E>>(&self, net: &mut I, req: &RequestVote<E>) -> bool {
         let last_committed_index = self.record
             .get_index(&self.record.last_committed())
             .unwrap();
@@ -349,10 +347,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// This method handles the vote requests. If the request is valid, it either sends the vote
     /// immediately, or saves is as a "lazy vote" to be sent on timeout. Invalid requests are
     /// denied.
-    fn handle_request_vote<I: NetworkInterface<T, E>>(&mut self,
-                                                      net: &mut I,
-                                                      req: RequestVote<T, E>)
-                                                      -> ConsensusResult<T, E> {
+    fn handle_request_vote<I: NetworkInterface<E>>(&mut self,
+                                                   net: &mut I,
+                                                   req: RequestVote<E>)
+                                                   -> ConsensusResult<E> {
         match self.voted_for {
             _ if req.term < self.current_term => {
                 warn!("Node({:?}): Received a vote request for an old term: {} < {}",
@@ -405,13 +403,13 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Handles the vote response - checks whether a vote was granted, saves it if yes and
     /// transitions us to the leader state if we collected a quorum of votes.
-    fn handle_vote_response<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                     net: &mut I,
-                                                                     sched: &mut S,
-                                                                     src: T,
-                                                                     response: VoteResponse<T>,
-                                                                     sig: sign::Signature)
-                                                                     -> ConsensusResult<T, E> {
+    fn handle_vote_response<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                  net: &mut I,
+                                                                  sched: &mut S,
+                                                                  src: PeerId,
+                                                                  response: VoteResponse,
+                                                                  sig: sign::Signature)
+                                                                  -> ConsensusResult<E> {
         if (self.state.is_candidate() || self.state.is_leader()) &&
            response.term == self.current_term && response.candidate == self.our_id {
             match response.vote_granted {
@@ -435,9 +433,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Checks whether we collected a quorum of votes and makes us the leader if yes.
-    fn check_election<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                               net: &mut I,
-                                                               sched: &mut S) {
+    fn check_election<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                            net: &mut I,
+                                                            sched: &mut S) {
         let votes_count = if let Some(votes) = self.state.votes() {
             votes.len()
         } else {
@@ -452,8 +450,8 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     fn check_for_new_leader<S: Scheduler>(&mut self,
                                           sched: &mut S,
                                           term: u64,
-                                          leader: T,
-                                          votes: &Votes<T>) {
+                                          leader: PeerId,
+                                          votes: &Votes) {
         if (self.current_term == term && Some(leader) == self.state.current_leader()) ||
            term < self.current_term || votes.is_empty() {
             return;
@@ -465,7 +463,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Returns whether a set of votes contains a quorum of valid votes for `leader`.
-    fn validate_votes(&self, term: u64, leader: T, votes: &Votes<T>) -> bool {
+    fn validate_votes(&self, term: u64, leader: PeerId, votes: &Votes) -> bool {
         let valid_votes_count = votes
             .iter()
             .filter(|&(name, &(vote, sig))| {
@@ -480,7 +478,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Checks whether the prev_log_* data from AppendEntries match our record.
-    fn append_entries_matches(&self, ae: &AppendEntries<T, E>) -> bool {
+    fn append_entries_matches(&self, ae: &AppendEntries<E>) -> bool {
         self.record.get(&ae.prev_log_hash).is_some() || ae.prev_log_hash == self.record.start_hash()
     }
 
@@ -511,7 +509,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Signs the entries from `unsigned_entries` which have corresponding `pending_entries` and
     /// broadcasts AppendEntriesResponses for them.
-    fn sign_correct_entries<I: NetworkInterface<T, E>>(&mut self, net: &mut I) {
+    fn sign_correct_entries<I: NetworkInterface<E>>(&mut self, net: &mut I) {
         // collect all unsigned entries along with their indices in the record
         let mut hashes_to_sign: Vec<_> = self.unsigned_entries
             .iter()
@@ -571,7 +569,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Looks for a configuration entry without a quorum of votes. If it doesn't find one, returns
     /// `entries.len()`.
-    fn find_first_config_without_quorum(&self, entries: &[&SignedRecordEntry<T, E>]) -> usize {
+    fn find_first_config_without_quorum(&self, entries: &[&SignedRecordEntry<E>]) -> usize {
         let mut cluster = if entries.len() > 0 {
             self.cluster_at_hash(entries[0].entry.parent_hash)
         } else {
@@ -592,7 +590,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Commits entries that gathered a quorum of signatures, applies committed cluster changes and
     /// returns a `Vec` of entries that are now safe to be applied to the state machine.
-    fn commit_fully_signed(&mut self) -> ConsensusResult<T, E> {
+    fn commit_fully_signed(&mut self) -> ConsensusResult<E> {
         let (commit_hash, result) = {
             let to_check = self.record.entries_since(&self.record.last_committed());
             let first_no_quorum = self.find_first_config_without_quorum(&to_check);
@@ -648,12 +646,12 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Handles the `AppendEntries` message - possibly registers a new leader, switches to the
     /// `Follower` state and appends entries being sent to the record.
-    fn handle_append_entries<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                      net: &mut I,
-                                                                      sched: &mut S,
-                                                                      src: T,
-                                                                      ae: AppendEntries<T, E>)
-                                                                      -> ConsensusResult<T, E> {
+    fn handle_append_entries<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                   net: &mut I,
+                                                                   sched: &mut S,
+                                                                   src: PeerId,
+                                                                   ae: AppendEntries<E>)
+                                                                   -> ConsensusResult<E> {
         self.check_for_new_leader(sched, ae.term, src, &ae.votes);
         match self.state.current_leader() {
             Some(leader) if leader == src && ae.term == self.current_term => {
@@ -696,11 +694,11 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Handles the AppendEntriesResponse message - updates the followers data and resends the
     /// entries with votes appended, if needed.
-    fn handle_append_entries_response<I: NetworkInterface<T, E>>(&mut self,
-                                                                 net: &mut I,
-                                                                 src: T,
-                                                                 aer: AppendEntriesResponse)
-                                                                 -> ConsensusResult<T, E> {
+    fn handle_append_entries_response<I: NetworkInterface<E>>(&mut self,
+                                                              net: &mut I,
+                                                              src: PeerId,
+                                                              aer: AppendEntriesResponse)
+                                                              -> ConsensusResult<E> {
         match aer {
             AppendEntriesResponse::Success { hash, signature } => {
                 if self.record.contains(&hash) {
@@ -759,9 +757,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// This method will be called when we don't receive heartbeats from the leader in a predefined
     /// time or when the previous election timed out. We then either start a new election, or vote
     /// for a node that started it already.
-    fn handle_election_timeout<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                        net: &mut I,
-                                                                        sched: &mut S) {
+    fn handle_election_timeout<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                     net: &mut I,
+                                                                     sched: &mut S) {
         match self.lazy_vote {
             None => {
                 self.become_candidate(net, sched);
@@ -782,9 +780,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// This method will be invoked on the leader when it needs to send the next heartbeat message
     /// in order to maintain its leadership.
-    fn handle_heartbeat_timeout<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                         net: &mut I,
-                                                                         sched: &mut S) {
+    fn handle_heartbeat_timeout<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                                      net: &mut I,
+                                                                      sched: &mut S) {
         if self.state.is_leader() {
             // broadcast heartbeats
             for peer in self.cluster.keys().filter(|&p| *p != self.our_id) {
@@ -805,8 +803,8 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     /// Generates a `VoteResponse` for a given candidate along with a cryptographic signature.
     fn vote_for(&self,
                 vote_granted: VoteResponseEnum,
-                candidate: T)
-                -> (VoteResponse<T>, sign::Signature) {
+                candidate: PeerId)
+                -> (VoteResponse, sign::Signature) {
         let vote = VoteResponse {
             term: self.current_term,
             candidate: candidate,
@@ -817,10 +815,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Sends a message requesting a vote from a follower.
-    fn send_request_vote<I: NetworkInterface<T, E>>(&self,
-                                                    net: &mut I,
-                                                    dst: T,
-                                                    entries: Vec<SignedRecordEntry<T, E>>) {
+    fn send_request_vote<I: NetworkInterface<E>>(&self,
+                                                 net: &mut I,
+                                                 dst: PeerId,
+                                                 entries: Vec<SignedRecordEntry<E>>) {
         let request = Content::RequestVote(RequestVote {
                                                term: self.current_term,
                                                candidate_name: self.our_id,
@@ -831,10 +829,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Sends the response to a vote request.
-    fn send_vote_response<I: NetworkInterface<T, E>>(&self,
-                                                     net: &mut I,
-                                                     grant_vote: VoteResponseEnum,
-                                                     candidate: T) {
+    fn send_vote_response<I: NetworkInterface<E>>(&self,
+                                                  net: &mut I,
+                                                  grant_vote: VoteResponseEnum,
+                                                  candidate: PeerId) {
         let (vote, sig) = self.vote_for(grant_vote, candidate);
         let content = Content::VoteResponse {
             response: vote,
@@ -845,10 +843,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Sends the `AppendEntries` message to `dst`, containing appropriate entries and a quorum of
     /// votes for us if `include_votes` is set.
-    fn send_append_entries<I: NetworkInterface<T, E>>(&self,
-                                                      net: &mut I,
-                                                      dst: T,
-                                                      include_votes: bool) {
+    fn send_append_entries<I: NetworkInterface<E>>(&self,
+                                                   net: &mut I,
+                                                   dst: PeerId,
+                                                   include_votes: bool) {
         if let State::Leader {
                    ref last_hash,
                    ref votes,
@@ -858,7 +856,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                 .get(&dst)
                 .map_or_else(Vec::new, |hash| self.record.entries_since(hash));
             let prev_hash = *last_hash.get(&dst).unwrap_or(&Digest([0; 32]));
-            let request: Content<T, E> =
+            let request: Content<E> =
                 Content::AppendEntries(AppendEntries {
                                            term: self.current_term,
                                            entries: entries.into_iter().cloned().collect(),
@@ -874,19 +872,16 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Sends the AppendEntriesResponse with the given result
-    fn send_append_entries_response<I: NetworkInterface<T, E>>(&self,
-                                                               net: &mut I,
-                                                               dst: T,
-                                                               result: AppendEntriesResponse) {
+    fn send_append_entries_response<I: NetworkInterface<E>>(&self,
+                                                            net: &mut I,
+                                                            dst: PeerId,
+                                                            result: AppendEntriesResponse) {
         let request = Content::AppendEntriesResponse(result);
         self.send_message(net, dst, request);
     }
 
     /// Sends a message from us to `dst` with the given content.
-    fn send_message<I: NetworkInterface<T, E>>(&self,
-                                               net: &mut I,
-                                               dst: T,
-                                               message: Content<T, E>) {
+    fn send_message<I: NetworkInterface<E>>(&self, net: &mut I, dst: PeerId, message: Content<E>) {
         let sig = message.signature(&self.our_key);
         let message = Message {
             src: self.our_id,
@@ -928,9 +923,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Switches us to the `Leader` state and establishes our authority by broadcasting
     /// `AppendEntries`.
-    fn become_leader<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                              net: &mut I,
-                                                              sched: &mut S) {
+    fn become_leader<I: NetworkInterface<E>, S: Scheduler>(&mut self, net: &mut I, sched: &mut S) {
         if self.state.is_leader() {
             return;
         }
@@ -952,9 +945,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Switches our state to `Candidate` and sends vote requests to other members of the cluster.
-    fn become_candidate<I: NetworkInterface<T, E>, S: Scheduler>(&mut self,
-                                                                 net: &mut I,
-                                                                 sched: &mut S) {
+    fn become_candidate<I: NetworkInterface<E>, S: Scheduler>(&mut self,
+                                                              net: &mut I,
+                                                              sched: &mut S) {
         info!("Node({:?}): Switching to Candidate.", self.our_id);
         self.current_term += 1;
         let mut votes = BTreeMap::new();
@@ -973,7 +966,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
     }
 
     /// Switches us to the `Follower` state.
-    fn become_follower<S: Scheduler>(&mut self, sched: &mut S, leader: T) {
+    fn become_follower<S: Scheduler>(&mut self, sched: &mut S, leader: PeerId) {
         info!("Node({:?}): Now following Node({:?}).", self.our_id, leader);
         self.state = State::Follower {
             current_leader: Some(leader),
@@ -983,8 +976,8 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 }
 
 #[cfg(test)]
-impl<T: PeerId, E: Entry> ConsensusState<T, E> {
-    pub fn state(&self) -> &State<T> {
+impl<E: Entry> ConsensusState<E> {
+    pub fn state(&self) -> &State {
         &self.state
     }
 
