@@ -210,24 +210,79 @@ mod implementation {
 
 #[cfg(feature = "use-mock-crust")]
 mod implementation {
-    use std::cell::Cell;
-    use std::time::Duration;
+    use std::cell::RefCell;
+    use std::collections::btree_map::{BTreeMap, Entry};
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
     use types::RoutingActionSender;
 
-    // The mock timer currently never raises timeout events.
+    struct Inner {
+        next_token: u64,
+        time: Instant,
+        scheduled: BTreeMap<Instant, Vec<u64>>,
+    }
+
+    /// The mock timer only raises timeouts when prompted. It maintains an inner "time" which is
+    /// advanced slightly when scheduling and advanced to the time of the next timeout when a
+    /// token is got via `get_next`, but otherwise does not change.
+    #[derive(Clone)]
     pub struct Timer {
-        next_token: Cell<u64>,
+        inner: Rc<RefCell<Inner>>,
     }
 
     impl Timer {
+        /// Create a new instance. Can be cloned (all clones share the same internal state).
         pub fn new(_: RoutingActionSender) -> Self {
-            Timer { next_token: Cell::new(0) }
+            let inner = Inner {
+                next_token: 0,
+                time: Instant::now(),
+                scheduled: Default::default(),
+            };
+            Timer { inner: Rc::new(RefCell::new(inner)) }
         }
 
-        pub fn schedule(&self, _: Duration) -> u64 {
-            let token = self.next_token.get();
-            self.next_token.set(token.wrapping_add(1));
+        /// Schedule a timeout.
+        pub fn schedule(&self, duration: Duration) -> u64 {
+            assert!(duration >= Duration::new(0, 0));
+            let mut inner = self.inner.borrow_mut();
+
+            let token = inner.next_token;
+            inner.next_token = token.wrapping_add(1);
+
+            let time = inner.time + duration;
+            match inner.scheduled.entry(time) {
+                Entry::Occupied(mut entry) => entry.get_mut().push(token),
+                Entry::Vacant(entry) => {
+                    let _inserted = entry.insert(vec![token]);
+                }
+            };
+
+            inner.time = inner.time + Duration::from_millis(1);
+
             token
+        }
+
+        /// Get the next pending timeout, if any.
+        #[allow(unused)] // TODO use
+        pub fn get_next(&mut self) -> Option<u64> {
+            let mut inner = self.inner.borrow_mut();
+
+            let (time, token, remove) = match inner.scheduled.iter_mut().next() {
+                Some((time, ref mut tokens)) => {
+                    let token = unwrap!(tokens.pop());
+                    (*time, token, tokens.is_empty())
+                }
+                None => return None,
+            };
+
+            if time > inner.time {
+                inner.time = time;
+            }
+            if remove {
+                let _old = inner.scheduled.remove(&time);
+            }
+
+            Some(token)
         }
     }
 }
