@@ -48,15 +48,17 @@ pub enum Content<T: PeerId, E: Entry> {
 impl<T: PeerId, E: Entry> Content<T, E> {
     /// Signs the message content with a given key.
     pub fn signature(&self, key: &sign::SecretKey) -> sign::Signature {
-        let bytes =
-            serialisation::serialise(self).ok().expect("Message content serialisation failure");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("Message content serialisation failure");
         sign::sign_detached(&bytes, key)
     }
 
     /// Verifies the content signature.
     pub fn verify(&self, sig: &sign::Signature, key: &sign::PublicKey) -> bool {
-        let bytes =
-            serialisation::serialise(self).ok().expect("Message content serialisation failure");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("Message content serialisation failure");
         sign::verify_detached(sig, &bytes, key)
     }
 }
@@ -117,7 +119,10 @@ pub enum AppendEntriesResponse {
 impl fmt::Debug for AppendEntriesResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            AppendEntriesResponse::Success { hash, ref signature } => {
+            AppendEntriesResponse::Success {
+                hash,
+                ref signature,
+            } => {
                 write!(formatter,
                        "Success({:?}, sig: {:?})",
                        PrintableDigest(hash),
@@ -154,13 +159,17 @@ pub struct VoteResponse<T: PeerId> {
 impl<T: PeerId> VoteResponse<T> {
     /// Generates a signature for a `VoteResponse` - needed during elections.
     pub fn sign(&self, key: &sign::SecretKey) -> sign::Signature {
-        let bytes = serialisation::serialise(self).ok().expect("VoteResponse serialisation error!");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("VoteResponse serialisation error!");
         sign::sign_detached(&bytes, key)
     }
 
     /// Verifies the vote signature.
     pub fn verify_sig(&self, sig: sign::Signature, key: &sign::PublicKey) -> bool {
-        let bytes = serialisation::serialise(self).ok().expect("VoteResponse serialisation error!");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("VoteResponse serialisation error!");
         sign::verify_detached(&sig, &bytes, key)
     }
 }

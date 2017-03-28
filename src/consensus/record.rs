@@ -57,21 +57,25 @@ pub struct LockedRecordEntry<T: PeerId, E: Entry> {
 impl<T: PeerId, E: Entry> LockedRecordEntry<T, E> {
     /// Calculate the hash of the entry
     pub fn hash(&self) -> Digest {
-        let bytes = serialisation::serialise(self).ok().expect("Serialisation failed");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("Serialisation failed");
         hash::sha256::hash(&bytes)
     }
 
     /// Signs the entry with a given key.
     pub fn signature(&self, key: &sign::SecretKey) -> sign::Signature {
-        let bytes =
-            serialisation::serialise(self).ok().expect("Message content serialisation failure");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("Message content serialisation failure");
         sign::sign_detached(&bytes, key)
     }
 
     /// Verifies the entry signature.
     pub fn verify(&self, sig: &sign::Signature, key: &sign::PublicKey) -> bool {
-        let bytes =
-            serialisation::serialise(self).ok().expect("Message content serialisation failure");
+        let bytes = serialisation::serialise(self)
+            .ok()
+            .expect("Message content serialisation failure");
         sign::verify_detached(sig, &bytes, key)
     }
 
@@ -108,7 +112,9 @@ impl<T: PeerId, E: Entry> SignedRecordEntry<T, E> {
         self.signatures
             .iter()
             .filter(|&(name, sig)| {
-                        cluster.get(name).map_or(false, |key| self.entry.verify(sig, key))
+                        cluster
+                            .get(name)
+                            .map_or(false, |key| self.entry.verify(sig, key))
                     })
             .count()
     }

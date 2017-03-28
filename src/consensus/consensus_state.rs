@@ -92,7 +92,12 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                                                                    net: &mut I,
                                                                    sched: &mut S)
                                                                    -> ConsensusResult<T, E> {
-        let Message { src, dst, content, signature } = message;
+        let Message {
+            src,
+            dst,
+            content,
+            signature,
+        } = message;
         // separate scope to stop borrowing self via src_pub_key before content matching
         {
             let src_pub_key = match self.cluster.get(&src) {
@@ -114,9 +119,10 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         // dispatch to the proper handler
         match content {
             Content::RequestVote(req) => self.handle_request_vote(net, req),
-            Content::VoteResponse { response, response_sig } => {
-                self.handle_vote_response(net, sched, src, response, response_sig)
-            }
+            Content::VoteResponse {
+                response,
+                response_sig,
+            } => self.handle_vote_response(net, sched, src, response, response_sig),
             Content::AppendEntries(ae) => self.handle_append_entries(net, sched, src, ae),
             Content::AppendEntriesResponse(aer) => {
                 self.handle_append_entries_response(net, src, aer)
@@ -297,7 +303,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                                                     net: &mut I,
                                                     req: &RequestVote<T, E>)
                                                     -> bool {
-        let last_committed_index = self.record.get_index(&self.record.last_committed()).unwrap();
+        let last_committed_index = self.record
+            .get_index(&self.record.last_committed())
+            .unwrap();
         let candidate_last_committed = self.record.get_index(&req.last_committed_hash);
         match candidate_last_committed {
             Some(cand_last_index) if cand_last_index < last_committed_index => {
@@ -415,10 +423,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                     self.check_election(net, sched);
                 }
                 VoteResponseEnum::Denied => {
-                    let _ = self.state
-                        .votes_mut()
-                        .unwrap()
-                        .remove(&src);
+                    let _ = self.state.votes_mut().unwrap().remove(&src);
                 }
                 VoteResponseEnum::RequestProof { last_committed } => {
                     let entries = self.record.entries_since(&last_committed);
@@ -461,11 +466,14 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
 
     /// Returns whether a set of votes contains a quorum of valid votes for `leader`.
     fn validate_votes(&self, term: u64, leader: T, votes: &Votes<T>) -> bool {
-        let valid_votes_count = votes.iter()
+        let valid_votes_count = votes
+            .iter()
             .filter(|&(name, &(vote, sig))| {
                         vote.term == term && vote.candidate == leader &&
                         vote.vote_granted == VoteResponseEnum::Granted &&
-                        self.cluster.get(&name).map_or(false, |key| vote.verify_sig(sig, key))
+                        self.cluster
+                            .get(&name)
+                            .map_or(false, |key| vote.verify_sig(sig, key))
                     })
             .count();
         self.is_quorum(valid_votes_count)
@@ -487,11 +495,12 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         for hash in to_drop {
             self.unsigned_entries.remove(&hash);
         }
-        let new_unsigned: Vec<_> = new_entries.into_iter()
+        let new_unsigned: Vec<_> = new_entries
+            .into_iter()
             .filter(|hash| {
-                        self.record.get(hash).map_or(false, |entry| {
-                    !entry.signatures.contains_key(&self.our_id)
-                })
+                        self.record
+                            .get(hash)
+                            .map_or(false, |entry| !entry.signatures.contains_key(&self.our_id))
                     })
             .cloned()
             .collect();
@@ -507,12 +516,16 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         let mut hashes_to_sign: Vec<_> = self.unsigned_entries
             .iter()
             .filter_map(|digest| {
-                            self.record.get_index(digest).and_then(|index| Some((index, *digest)))
+                            self.record
+                                .get_index(digest)
+                                .and_then(|index| Some((index, *digest)))
                         })
             .collect();
         // sort the entries by index
         hashes_to_sign.sort_by_key(|x| x.0);
-        let last_committed_index = self.record.get_index(&self.record.last_committed()).unwrap();
+        let last_committed_index = self.record
+            .get_index(&self.record.last_committed())
+            .unwrap();
         let mut signed = HashSet::new();
         // make a copy of pending entries to control which entries we have signed - we will be
         // removing signed entries so that we don't sign the same entry twice
@@ -521,8 +534,12 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         let mut pending_entries = self.pending_entries.clone();
         for (index, hash) in hashes_to_sign {
             // check whether we have the entry in pending entries
-            let entry = self.record.get(&hash).and_then(|entry| Some(entry.entry.entry.clone()));
-            if !entry.as_ref().map_or(false, |entry| pending_entries.contains(entry)) {
+            let entry = self.record
+                .get(&hash)
+                .and_then(|entry| Some(entry.entry.entry.clone()));
+            if !entry
+                    .as_ref()
+                    .map_or(false, |entry| pending_entries.contains(entry)) {
                 continue;
             }
             // we have it - remove from the pending entries copy and sign
@@ -530,12 +547,15 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
             // only signed the entry if we agree to its parent as well; consider committed entries
             // to be agreed on
             if index > last_committed_index + 1 &&
-               !self.record.get(&hash).map_or(false,
-                                              |entry| signed.contains(&entry.entry.parent_hash)) {
+               !self.record
+                    .get(&hash)
+                    .map_or(false, |entry| signed.contains(&entry.entry.parent_hash)) {
                 break;
             }
             // sign the entry
-            let sig = self.record.sign(&hash, self.our_id, &self.our_key).unwrap();
+            let sig = self.record
+                .sign(&hash, self.our_id, &self.our_key)
+                .unwrap();
             self.unsigned_entries.remove(&hash);
             signed.insert(hash);
             // broadcast AppendEntriesResponse
@@ -641,7 +661,11 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                 self.lazy_vote = None;
                 if self.append_entries_matches(&ae) &&
                    self.validate_entries(ae.prev_log_hash, &ae.entries) {
-                    let AppendEntries { entries, prev_log_hash, .. } = ae;
+                    let AppendEntries {
+                        entries,
+                        prev_log_hash,
+                        ..
+                    } = ae;
                     // collect hashes of entries being appended for further reference
                     let hashes: Vec<_> = entries.iter().map(|entry| entry.entry.hash()).collect();
                     // add the new entries to the log
@@ -681,7 +705,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
             AppendEntriesResponse::Success { hash, signature } => {
                 if self.record.contains(&hash) {
                     if let Some(signature) = signature {
-                        if self.cluster.get(&src).map_or(false, |pub_key| {
+                        if self.cluster
+                               .get(&src)
+                               .map_or(false, |pub_key| {
                             self.record
                                 .get(&hash)
                                 .unwrap()
@@ -693,8 +719,9 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                     }
                     if let State::Leader { ref mut last_hash, .. } = self.state {
                         // update the follower's last_hash
-                        let current_last =
-                            last_hash.get(&src).map_or(self.record.start_hash(), |hash| *hash);
+                        let current_last = last_hash
+                            .get(&src)
+                            .map_or(self.record.start_hash(), |hash| *hash);
                         let current_last_index = self.record.get_index(&current_last).unwrap_or(0);
                         let new_last_index = self.record.get_index(&hash).unwrap_or(0);
                         if new_last_index > current_last_index {
@@ -706,11 +733,13 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
             }
             AppendEntriesResponse::Failure => {
                 let resend = if let State::Leader { ref mut last_hash, .. } = self.state {
-                    let current_last = last_hash.get(&src).map_or(self.record.last_hash(),
-                                                                  |hash| *hash);
+                    let current_last = last_hash
+                        .get(&src)
+                        .map_or(self.record.last_hash(), |hash| *hash);
                     let parent =
-                        self.record.get(&current_last).map_or(self.record.last_hash(),
-                                                              |entry| entry.entry.parent_hash);
+                        self.record
+                            .get(&current_last)
+                            .map_or(self.record.last_hash(), |entry| entry.entry.parent_hash);
                     last_hash.insert(src, parent);
                     true
                 } else {
@@ -820,9 +849,14 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
                                                       net: &mut I,
                                                       dst: T,
                                                       include_votes: bool) {
-        if let State::Leader { ref last_hash, ref votes, .. } = self.state {
-            let entries =
-                last_hash.get(&dst).map_or_else(Vec::new, |hash| self.record.entries_since(hash));
+        if let State::Leader {
+                   ref last_hash,
+                   ref votes,
+                   ..
+               } = self.state {
+            let entries = last_hash
+                .get(&dst)
+                .map_or_else(Vec::new, |hash| self.record.entries_since(hash));
             let prev_hash = *last_hash.get(&dst).unwrap_or(&Digest([0; 32]));
             let request: Content<T, E> =
                 Content::AppendEntries(AppendEntries {
@@ -871,7 +905,8 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         let mut pending_copy = mem::replace(&mut self.pending_entries, HashSet::new());
         let mut last_agreeing_hash = self.record.last_hash();
         let mut to_sign = Vec::new();
-        for entry in self.record.range(&self.record.last_committed(), &self.record.last_hash()) {
+        for entry in self.record
+                .range(&self.record.last_committed(), &self.record.last_hash()) {
             if !pending_copy.contains(&entry.entry.entry) {
                 last_agreeing_hash = entry.entry.parent_hash;
                 break;
@@ -901,10 +936,7 @@ impl<T: PeerId, E: Entry> ConsensusState<T, E> {
         }
         info!("Node({:?}): Switching to Leader.", self.our_id);
         self.reset_uncommitted();
-        let votes = self.state
-            .votes()
-            .unwrap()
-            .clone();
+        let votes = self.state.votes().unwrap().clone();
         self.state = State::Leader {
             heartbeat_token: sched.schedule(HEARTBEAT_PERIOD),
             last_hash: self.cluster
