@@ -30,7 +30,7 @@ pub trait Entry: Encodable + Clone + PartialEq + Eq + Hash {}
 
 /// An enum representing possible configuration (membership) changes - these have to be handled
 /// separately
-#[derive(Clone, RustcEncodable, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, RustcEncodable, PartialEq, Eq, Hash)]
 pub enum ConfigurationEntry {
     NodeAdded(PeerId, sign::PublicKey),
     NodeRemoved(PeerId, sign::PublicKey),
@@ -40,7 +40,7 @@ pub enum ConfigurationEntry {
 
 /// A record entry type - can be either of regular entry (of type defined by the application) or a
 /// configuration change entry
-#[derive(Clone, RustcEncodable, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, RustcEncodable, PartialEq, Eq, Hash)]
 pub enum RecordEntry<E: Entry> {
     Regular(E),
     Config(ConfigurationEntry),
@@ -48,7 +48,7 @@ pub enum RecordEntry<E: Entry> {
 
 /// A "locked" record entry is an entry that has a validatable history - it can be validated by
 /// checking the hashes of the previous entries
-#[derive(Clone, RustcEncodable)]
+#[derive(Clone, Debug, RustcEncodable)]
 pub struct LockedRecordEntry<E: Entry> {
     pub entry: RecordEntry<E>,
     pub parent_hash: Digest,

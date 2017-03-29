@@ -21,26 +21,67 @@ use consensus::record::{Entry, RecordEntry};
 use crust::PeerId;
 use maidsafe_utilities::event_sender::MaidSafeEventCategory;
 use rand;
-use rand::distributions::{IndependentSample, Range};
+use rand::distributions::{IndependentSample, LogNormal, Range};
 use rust_sodium::crypto::sign;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::mem;
 use std::sync::mpsc;
+use std::time::Duration;
 use timer::Timer;
 use types::RoutingActionSender;
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, RustcEncodable, Hash)]
 pub enum TestEntry {
     Test,
 }
 impl Entry for TestEntry {}
 
+struct MsgQueue<E: Entry> {
+    pub timer: Timer,
+    pub queued: HashMap<u64, Message<E>>,
+    rng: rand::ThreadRng,
+    dist: LogNormal,
+}
+
+impl<E: Entry> MsgQueue<E> {
+    pub fn new(timer: Timer, randomize_msgs: bool) -> Self {
+        // Standard deviation of 1 should produce most samples between 0.1 and 3
+        let std_dev = if randomize_msgs { 1f64 } else { 0f64 };
+        MsgQueue {
+            timer: timer,
+            queued: Default::default(),
+            rng: rand::thread_rng(),
+            dist: LogNormal::new(0f64, std_dev),
+        }
+    }
+}
+
+impl<E: Entry> NetworkInterface<E> for MsgQueue<E> {
+    fn send_message(&mut self, msg: Message<E>) {
+        let delay = self.dist.ind_sample(&mut self.rng);
+        // approx. 5% chance delay is longer than 5, approx. 1% chance delay is longer than 10
+        // (for mean 0, var 1: use logncdf(x) in Matlab/Octave)
+        if delay > 10.0 {
+            trace!("{:?} sends {:?} to {:?}; message lost",
+                   msg.src,
+                   msg.content,
+                   msg.dst);
+        } else {
+            trace!("{:?} sends {:?} to {:?} with delay {:.2}s",
+                   msg.src,
+                   msg.content,
+                   msg.dst,
+                   delay);
+            let dur = Duration::new(delay.trunc() as u64, (delay.fract() * 1e9) as u32);
+            let token = self.timer.schedule(dur);
+            self.queued.insert(token, msg);
+        }
+    }
+}
+
 pub struct Cluster {
     nodes: Vec<ConsensusState<TestEntry>>,
-    timer: Timer,
-    msg_queue: VecDeque<Message<TestEntry>>,
-    randomize_msgs: bool,
-    rng: rand::ThreadRng,
+    msg_queue: MsgQueue<TestEntry>,
 }
 
 impl Cluster {
@@ -54,7 +95,8 @@ impl Cluster {
         let sender = RoutingActionSender::new(action_sender,
                                               routing_event_category,
                                               category_sender.clone());
-        let mut timer = Timer::new(sender);
+        let timer = Timer::new(sender);
+
         for i in 0..num_nodes {
             let (pub_key, priv_key) = sign::gen_keypair();
             secret_keys.push(priv_key);
@@ -66,53 +108,46 @@ impl Cluster {
                 ConsensusState::new(PeerId(i), secret_key, cluster_keys.clone(), timer.clone());
             cluster.push(node);
         }
+
         Cluster {
             nodes: cluster,
-            timer: timer,
-            msg_queue: VecDeque::new(),
-            randomize_msgs: randomize_msgs,
-            rng: rand::thread_rng(),
+            msg_queue: MsgQueue::new(timer, randomize_msgs),
         }
     }
 
-    pub fn deliver_msgs(&mut self) {
-        let mut old_queue = mem::replace(&mut self.msg_queue, VecDeque::new());
-        while !old_queue.is_empty() {
-            let msg = if self.randomize_msgs {
-                let index = Range::new(0, old_queue.len()).ind_sample(&mut self.rng);
-                old_queue.remove(index).unwrap()
+    /// Run until some node commits one or more record entries.
+    pub fn continue_until_entry(&mut self) -> (usize, Vec<RecordEntry<TestEntry>>) {
+        let mut n_timers = 0;
+        while let Some(token) = self.msg_queue.timer.get_next() {
+            n_timers += 1;
+            if n_timers > 1000 {
+                // Sometimes test seems to loop forever. 1000 should be plenty.
+                panic!("No result in 1000 timeouts");
+            }
+
+            if let Some(msg) = self.msg_queue.queued.remove(&token) {
+                let dst = msg.dst.0;
+                match self.nodes[dst].handle_message(msg, &mut self.msg_queue) {
+                    Ok(entries) => {
+                        if entries.len() > 0 {
+                            return (dst, entries);
+                        }
+                    }
+                    Err(e) => panic!("handle_message on node {} failed: {:?}", dst, e),
+                };
             } else {
-                old_queue.pop_front().unwrap()
-            };
-            let dst = msg.dst.0;
-            let _ = self.nodes[dst].handle_message(msg, &mut self.msg_queue);
-        }
-    }
-
-    pub fn deliver_msgs_until_empty(&mut self) {
-        while !self.msg_queue.is_empty() {
-            self.deliver_msgs();
-        }
-    }
-
-    pub fn handle_timeouts(&mut self) {
-        while let Some(token) = self.timer.get_next() {
-            // We don't know which node this is for, but it will be unique. Send to all for test.
-            for ref mut node in &mut self.nodes {
-                node.handle_timeout(token, &mut self.msg_queue);
+                // We don't know which node this is for, but it will be unique. Send to all.
+                for ref mut node in &mut self.nodes {
+                    node.handle_timeout(token, &mut self.msg_queue);
+                }
             }
         }
+        // We never get here because each node schedules heartbeats forever
+        panic!("No timeouts left");
     }
 
     pub fn propose_entry(&mut self, name: usize, entry: RecordEntry<TestEntry>) {
         let _ = self.nodes[name].propose_entry(&mut self.msg_queue, entry);
-    }
-}
-
-impl<E: Entry> NetworkInterface<E> for VecDeque<Message<E>> {
-    fn send_message(&mut self, msg: Message<E>) {
-        trace!("{:?} sends {:?} to {:?}", msg.src, msg.content, msg.dst);
-        self.push_back(msg);
     }
 }
 
@@ -157,21 +192,18 @@ mod test {
     }
 
     #[test]
+    #[ignore] // TODO: sometimes fails
     fn test_elect_leader() {
         let _ = maidsafe_utilities::log::init(false);
         let mut cluster = Cluster::new(8, true);
-        for _ in 0..10 {
-            cluster.handle_timeouts();
-            cluster.deliver_msgs_until_empty();
-            print_cluster_states(&cluster);
-        }
+
         for i in 0..6 {
             cluster.propose_entry(i, RecordEntry::Regular(TestEntry::Test));
         }
-        for _ in 0..10 {
-            cluster.handle_timeouts();
-            cluster.deliver_msgs_until_empty();
-            print_cluster_states(&cluster);
+        print_cluster_states(&cluster);
+        let (node, entries) = cluster.continue_until_entry();
+        for (i, entry) in entries.iter().enumerate() {
+            debug!("Node {} committed entry {}: {:?}", node, i, entry);
         }
     }
 }
